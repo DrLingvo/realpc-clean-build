@@ -35,7 +35,7 @@ SUDO=; [ "$(id -u)" -eq 0 ] || SUDO=sudo
 log "Installing base tools"
 $SUDO apt-get update
 $SUDO apt-get install -y --no-install-recommends git ca-certificates devscripts equivs \
-  build-essential quilt acpica-tools python3 python-is-python3 meson ninja-build
+  build-essential quilt acpica-tools python3 python-is-python3 meson ninja-build lintian
 
 # clone_pinned <name> <commit>: clone from git.proxmox.com and verify the commit
 clone_pinned() {
