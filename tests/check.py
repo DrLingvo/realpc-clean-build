@@ -39,18 +39,26 @@ while i < len(t):
     j = i + ln
     end = t.index(b"\0\0", j)
     strs = [s.decode(errors="replace") for s in t[j:end].split(b"\0")] if end > j else []
-    tables.append((ty, strs))
+    tables.append((ty, strs, t[i:j]))
     i = end + 2
     if ty == 127:
         break
-types = sorted(set(ty for ty, _ in tables))
+types = sorted(set(ty for ty, _, _ in tables))
 print("     SMBIOS types:", types)
-allstr = " | ".join(s for _, ss in tables for s in ss)
+allstr = " | ".join(s for _, ss, _ in tables for s in ss)
 print("     SMBIOS strings:", allstr[:600])
 for want in (7, 9, 17, 26, 27, 28, 29, 39):
     check(want in types, f"SMBIOS type {want} present")
 for bad in ("QEMU", "Bochs", "BOCHS", "pc-q35", "pc-i440fx", "aiiaicodo", "Standard PC"):
     check(bad not in allstr, f"SMBIOS strings contain no {bad!r}")
+# memory profile must be self-consistent (no DDR3 / no laptop SODIMM on a desktop board)
+for ty, ss, body in tables:
+    if ty == 17 and len(body) > 0x17:
+        ff, mt = body[0x0e], body[0x12]
+        memnames = {0x18: "DDR3", 0x1a: "DDR4", 0x22: "DDR5"}
+        print(f"     SMBIOS type17: memory_type=0x{mt:02x} ({memnames.get(mt,'?')}) form_factor=0x{ff:02x}")
+        check(mt != 0x18, "SMBIOS memory is not DDR3 (author default was DDR3-1600)")
+        check(ff != 0x0d, "SMBIOS memory form factor is not SODIMM (laptop) on a desktop board")
 
 # ---------------------------------------------------------------- QEMU binary strings
 blob = open(qemu_bin, "rb").read()

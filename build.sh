@@ -70,6 +70,7 @@ log "Applying anti-detection edits to QEMU"
   sed -e "s/@SMBIOS_PSU_NAME@/$SMBIOS_PSU_NAME/" \
       -e "s/@SMBIOS_BATTERY_VENDOR@/$SMBIOS_BATTERY_VENDOR/" \
       -e "s/@SMBIOS_BATTERY_SERIAL@/$SMBIOS_BATTERY_SERIAL/" "$KIT/qemu/smbios.patch" | patch -p1 --forward
+  bash "$KIT/qemu/smbios-profile.sh"
   [ "$STRONG_PCI_IDS" = 1 ] && bash "$KIT/qemu/strong-pci-ids.sh"
   if [ "$HOST_SENSORS" = 1 ]; then
     patch -p1 --forward < "$KIT/qemu/host-sensors.patch"
