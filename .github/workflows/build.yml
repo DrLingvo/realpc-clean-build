@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Free disk space on the runner
         run: |
@@ -32,7 +32,7 @@ jobs:
           [ "$stages" = edk2 ] && stages="edk2 acpi"
           docker run --rm -v "$PWD":/kit -w /kit debian:trixie bash ci/container-build.sh "$stages"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: out-${{ matrix.stage }}
           path: |
@@ -47,8 +47,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
         with:
           path: out
           merge-multiple: true

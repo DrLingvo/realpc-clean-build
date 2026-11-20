@@ -26,7 +26,7 @@ want() { [[ " $STAGES " == *" $1 "* ]]; }
 # ---------------------------------------------------------------- environment checks
 . /etc/os-release
 [ "${VERSION_CODENAME:-}" = trixie ] || { echo "Run this in Debian 13 (trixie); found ${PRETTY_NAME:-?}" >&2; exit 1; }
-if ! apt-cache policy pve-qemu-kvm | grep -q 'download.proxmox.com'; then
+if ! apt-cache policy pve-qemu-kvm 2>/dev/null | grep 'download.proxmox.com' >/dev/null; then
   echo "The Proxmox VE 9 apt repository is not configured (needed for build-deps such as" >&2
   echo "libproxmox-backup-qemu0-dev). See README.md, step 2." >&2; exit 1
 fi
