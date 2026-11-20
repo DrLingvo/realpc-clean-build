@@ -3,7 +3,7 @@ name: build
 on:
   push:
     branches: [main]
-    paths-ignore: ['**.md']
+    paths-ignore: ['**.md', 'tests/**', 'ci/container-test.sh', '.github/workflows/test.yml']
   workflow_dispatch:
 
 permissions:
@@ -39,18 +39,5 @@ jobs:
             out/*.deb
             out/*.aml
             out/*.diff
-            out/SHA256SUMS
+            out/SHA256SUMS*
           if-no-files-found: error
-
-  test:
-    needs: build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v5
-        with:
-          path: out
-          merge-multiple: true
-      - name: Install packages and run checks in debian:trixie
-        run: docker run --rm -v "$PWD":/kit -w /kit debian:trixie bash ci/container-test.sh

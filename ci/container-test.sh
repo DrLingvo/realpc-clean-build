@@ -20,7 +20,7 @@ Signed-By: $KEYRING
 EOF
 apt-get update
 
-echo "=== artifacts"; ls -la out; (cd out && sha256sum -c SHA256SUMS --ignore-missing)
+echo "=== artifacts"; ls -la out; (cd out && for f in SHA256SUMS*; do sha256sum -c "$f" --ignore-missing; done)
 apt-get install -y --no-install-recommends ./out/pve-qemu-kvm_*_amd64.deb ./out/pve-edk2-firmware-ovmf_*_all.deb
 dpkg -l pve-qemu-kvm pve-edk2-firmware-ovmf | tail -2
 qemu-system-x86_64 --version
@@ -34,7 +34,8 @@ python3 -I tests/fwcfg_dump.py /tmp/fw -- qemu-system-x86_64 -accel qtest -machi
 echo "=== OVMF extract"
 pip install --break-system-packages -q uefi_firmware
 mkdir -p /tmp/ovmf && cp /usr/share/pve-edk2-firmware/OVMF_CODE_4M.fd /tmp/ovmf/
-uefi-firmware-parser --brute -e -O /tmp/ovmf/OVMF_CODE_4M.fd >/dev/null
+uefi-firmware-parser --brute -e -O /tmp/ovmf/OVMF_CODE_4M.fd | tail -3
+find /tmp/ovmf -name "*.pe" | wc -l
 
 echo "=== checks"
 python3 -I tests/check.py /tmp/fw /tmp/ovmf/OVMF_CODE_4M.fd_output /usr/bin/qemu-system-x86_64

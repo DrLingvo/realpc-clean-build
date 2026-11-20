@@ -1,0 +1,48 @@
+name: test
+
+# Installs the packages from the latest successful "build" run into a clean debian:trixie
+# container and runs tests/. Runs automatically after each build, on changes to the tests,
+# or by hand (Actions -> test -> Run workflow), without rebuilding anything.
+on:
+  workflow_run:
+    workflows: [build]
+    types: [completed]
+  push:
+    branches: [main]
+    paths: ['tests/**', 'ci/container-test.sh', '.github/workflows/test.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  test:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Find the build run to test
+        id: run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" = workflow_run ]; then
+            id="${{ github.event.workflow_run.id }}"
+          else
+            id=$(gh run list -R "$GITHUB_REPOSITORY" -w build -s success -L 1 --json databaseId -q '.[0].databaseId')
+          fi
+          echo "Testing artifacts of build run $id"
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v5
+        with:
+          run-id: ${{ steps.run.outputs.id }}
+          github-token: ${{ github.token }}
+          path: out
+          merge-multiple: true
+
+      - name: Install packages and run checks in debian:trixie
+        run: docker run --rm -v "$PWD":/kit -w /kit debian:trixie bash ci/container-test.sh

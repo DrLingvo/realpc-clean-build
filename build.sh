@@ -132,6 +132,6 @@ bash "$KIT/acpi/build-acpi.sh" "$OUT"
 
 fi
 
-( cd "$OUT" && sha256sum $(ls ./*.deb ./*.aml ./*.diff 2>/dev/null) > SHA256SUMS )
+( cd "$OUT" && sha256sum $(ls ./*.deb ./*.aml ./*.diff 2>/dev/null) > "SHA256SUMS.${STAGES// /-}" )
 log "Done. Results in $OUT"
 ls -la "$OUT"

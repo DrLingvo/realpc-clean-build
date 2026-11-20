@@ -61,13 +61,17 @@ for bad in (b"QEMU HARDDISK", b"QEMU DVD-ROM", b"QEMU Virtual CPU", b"KVMKVMKVM\
 # ---------------------------------------------------------------- OVMF
 found_proxmox = False
 found_qemu_video = False
+modules = 0
 for dp, dn, fn in os.walk(ovmf_dir):
     for f in fn:
+        if f.endswith((".pe", ".te")):
+            modules += 1
         b = open(os.path.join(dp, f), "rb").read()
         if "Proxmox".encode("utf-16le") in b or b"Proxmox" in b:
             found_proxmox = True
         if "QemuVideoDxe".encode("utf-16le") in b:
             found_qemu_video = True
+check(modules >= 100, f"OVMF image was unpacked ({modules} PE/TE modules found)")
 check(not found_proxmox, "OVMF contains no 'Proxmox' string (firmware vendor replaced)")
 check(not found_qemu_video, "OVMF module QemuVideoDxe renamed")
 
