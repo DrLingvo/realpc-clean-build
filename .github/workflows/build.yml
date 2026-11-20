@@ -1,0 +1,56 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        stage: [qemu, edk2]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space on the runner
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/boost
+          sudo docker image prune -af >/dev/null
+          df -h /
+
+      - name: Build ${{ matrix.stage }} in debian:trixie
+        run: |
+          stages="${{ matrix.stage }}"
+          [ "$stages" = edk2 ] && stages="edk2 acpi"
+          docker run --rm -v "$PWD":/kit -w /kit debian:trixie bash ci/container-build.sh "$stages"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: out-${{ matrix.stage }}
+          path: |
+            out/*.deb
+            out/*.aml
+            out/*.diff
+            out/SHA256SUMS
+          if-no-files-found: error
+
+  test:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Install packages and run checks in debian:trixie
+        run: docker run --rm -v "$PWD":/kit -w /kit debian:trixie bash ci/container-test.sh
