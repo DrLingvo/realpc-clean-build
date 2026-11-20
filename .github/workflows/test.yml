@@ -7,10 +7,7 @@ on:
   workflow_run:
     workflows: [build]
     types: [completed]
-  push:
-    branches: [main]
-    paths: ['tests/**', 'ci/container-test.sh', '.github/workflows/test.yml']
-  workflow_dispatch:
+  workflow_dispatch:   # re-test the latest successful build without rebuilding
 
 permissions:
   contents: read
