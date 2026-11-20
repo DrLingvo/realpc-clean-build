@@ -71,6 +71,9 @@ log "Applying anti-detection edits to QEMU"
       -e "s/@SMBIOS_BATTERY_VENDOR@/$SMBIOS_BATTERY_VENDOR/" \
       -e "s/@SMBIOS_BATTERY_SERIAL@/$SMBIOS_BATTERY_SERIAL/" "$KIT/qemu/smbios.patch" | patch -p1 --forward
   [ "$STRONG_PCI_IDS" = 1 ] && bash "$KIT/qemu/strong-pci-ids.sh"
+  if [ "$HOST_SENSORS" = 1 ]; then
+    patch -p1 --forward < "$KIT/qemu/host-sensors.patch"
+  fi
   if [ "$IGD_LPC_HACK" = 1 ]; then
     grep -q '!object_dynamic_cast(OBJECT(lpc_bridge)' hw/vfio/igd.c
     sed -i 's/!object_dynamic_cast(OBJECT(lpc_bridge)/object_dynamic_cast(OBJECT(lpc_bridge)/' hw/vfio/igd.c

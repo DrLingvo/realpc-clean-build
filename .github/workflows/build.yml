@@ -30,6 +30,9 @@ jobs:
         run: |
           stages="${{ matrix.stage }}"
           [ "$stages" = edk2 ] && stages="edk2 acpi"
+          # exercise the host-sensors patch in CI (verifies it applies + compiles);
+          # the committed default in config.env stays off
+          [ "$stages" = qemu ] && sed -i 's/^HOST_SENSORS=0/HOST_SENSORS=1/' config.env
           docker run --rm -v "$PWD":/kit -w /kit debian:trixie bash ci/container-build.sh "$stages"
 
       - uses: actions/upload-artifact@v5

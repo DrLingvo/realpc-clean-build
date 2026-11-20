@@ -1,0 +1,186 @@
+diff --git a/target/i386/cpu.c b/target/i386/cpu.c
+index cc3eddb..c0ce714 100644
+--- a/target/i386/cpu.c
++++ b/target/i386/cpu.c
+@@ -8777,6 +8777,10 @@ void cpu_x86_cpuid(CPUX86State *env, uint32_t index, uint32_t count,
+     case 6:
+         /* Thermal and Power Leaf */
+         *eax = env->features[FEAT_6_EAX];
++        if (cpu->host_sensors) {
++            /* advertise the digital thermal sensor MSRs we pass through */
++            *eax |= CPUID_6_EAX_DTS | CPUID_6_EAX_PTM;
++        }
+         *ebx = 0;
+         *ecx = 0;
+         *edx = 0;
+@@ -10813,6 +10817,7 @@ static const Property x86_cpu_properties[] = {
+     DEFINE_PROP_BOOL("x-amd-topoext-features-only", X86CPU, amd_topoext_features_only, true),
+     DEFINE_PROP_BOOL("lmce", X86CPU, enable_lmce, false),
+     DEFINE_PROP_BOOL("l3-cache", X86CPU, enable_l3_cache, true),
++    DEFINE_PROP_BOOL("host-sensors", X86CPU, host_sensors, false),
+     DEFINE_PROP_BOOL("kvm-pv-enforce-cpuid", X86CPU, kvm_pv_enforce_cpuid,
+                      false),
+     DEFINE_PROP_BOOL("vmware-cpuid-freq", X86CPU, vmware_cpuid_freq, true),
+diff --git a/target/i386/cpu.h b/target/i386/cpu.h
+index e581fee..44283ed 100644
+--- a/target/i386/cpu.h
++++ b/target/i386/cpu.h
+@@ -454,6 +454,10 @@ typedef enum X86Seg {
+ #define MSR_IA32_SMBASE                 0x9e
+ #define MSR_SMI_COUNT                   0x34
+ #define MSR_CORE_THREAD_COUNT           0x35
++#define MSR_IA32_PERF_STATUS_HS         0x198
++#define MSR_IA32_THERM_STATUS_HS        0x19c
++#define MSR_TEMPERATURE_TARGET_HS       0x1a2
++#define MSR_IA32_PACKAGE_THERM_STATUS_HS 0x1b1
+ #define MSR_MTRRcap                     0xfe
+ #define MSR_MTRR_MEM_TYPE_WB            0x06
+ #define MSR_MTRRcap_VCNT                8
+@@ -1231,7 +1235,9 @@ uint64_t x86_cpu_get_supported_feature_word(X86CPU *cpu, FeatureWord w);
+ #define CPUID_XSAVE_XSAVES     (1U << 3)
+ #define CPUID_XSAVE_XFD        (1U << 4)
+ 
++#define CPUID_6_EAX_DTS        (1U << 0)
+ #define CPUID_6_EAX_ARAT       (1U << 2)
++#define CPUID_6_EAX_PTM        (1U << 6)
+ 
+ /* CPUID[0x80000007].EDX flags: */
+ #define CPUID_APM_INVTSC       (1U << 8)
+@@ -2475,6 +2481,12 @@ struct ArchCPU {
+     /* Forcefully disable KVM PV features not exposed in guest CPUIDs */
+     bool kvm_pv_enforce_cpuid;
+ 
++    /*
++     * host-sensors: let the guest read the host CPU's digital thermal sensor
++     * and performance-status MSRs (Intel), for monitoring tools in the guest.
++     */
++    bool host_sensors;
++
+     /*
+      * Expose arch-capabilities unconditionally even on AMD models, for backwards
+      * compatibility with QEMU <10.1.
+diff --git a/target/i386/kvm/kvm.c b/target/i386/kvm/kvm.c
+index c2e3fbb..12febe3 100644
+--- a/target/i386/kvm/kvm.c
++++ b/target/i386/kvm/kvm.c
+@@ -2218,6 +2218,106 @@ static void kvm_init_pmu_info(struct kvm_cpuid2 *cpuid, X86CPU *cpu)
+     }
+ }
+ 
++/*
++ * host-sensors: pass the host's thermal and performance-status MSRs through to
++ * the guest. Reads are served from /dev/cpu/N/msr of the host CPU the vCPU
++ * thread is running on at that moment (needs the "msr" kernel module and
++ * permission to read it; QEMU runs as root on Proxmox VE). Writes are ignored.
++ * Only a fixed list of read-only sensor MSRs is exposed.
++ */
++static int *host_sensor_msr_fds;
++static int host_sensor_ncpus;
++static QemuMutex host_sensor_lock;
++
++static int host_sensor_fd(int hcpu)
++{
++    int fd;
++
++    if (hcpu < 0 || hcpu >= host_sensor_ncpus) {
++        return -1;
++    }
++    fd = qatomic_read(&host_sensor_msr_fds[hcpu]);
++    if (fd != -2) {
++        return fd;
++    }
++    qemu_mutex_lock(&host_sensor_lock);
++    fd = host_sensor_msr_fds[hcpu];
++    if (fd == -2) {
++        g_autofree char *path = g_strdup_printf("/dev/cpu/%d/msr", hcpu);
++        fd = open(path, O_RDONLY | O_CLOEXEC);
++        if (fd < 0) {
++            warn_report_once("host-sensors: cannot open %s: %s "
++                             "(is the msr module loaded?)",
++                             path, strerror(errno));
++        }
++        qatomic_set(&host_sensor_msr_fds[hcpu], fd);
++    }
++    qemu_mutex_unlock(&host_sensor_lock);
++    return fd;
++}
++
++static bool kvm_rdmsr_host_sensor(X86CPU *cpu, uint32_t msr, uint64_t *val)
++{
++    int fd = host_sensor_fd(sched_getcpu());
++
++    *val = 0;
++    if (fd >= 0 && pread(fd, val, sizeof(*val), msr) != sizeof(*val)) {
++        *val = 0;
++    }
++    /* never inject #GP: monitoring drivers in the guest may not expect it */
++    return true;
++}
++
++static bool kvm_wrmsr_host_sensor(X86CPU *cpu, uint32_t msr, uint64_t val)
++{
++    return true;
++}
++
++static int kvm_enable_host_sensor_msrs(KVMState *s)
++{
++    static const uint32_t msrs[] = {
++        MSR_IA32_PERF_STATUS_HS,
++        MSR_IA32_THERM_STATUS_HS,
++        MSR_TEMPERATURE_TARGET_HS,
++        MSR_IA32_PACKAGE_THERM_STATUS_HS,
++    };
++    static bool done;
++    int i, ret;
++
++    if (done) {
++        return 0;
++    }
++    if (!is_host_cpu_intel()) {
++        error_report("host-sensors is only supported on Intel hosts");
++        return -ENOTSUP;
++    }
++    if (!kvm_vm_check_extension(s, KVM_CAP_X86_USER_SPACE_MSR)) {
++        error_report("host-sensors needs KVM_CAP_X86_USER_SPACE_MSR");
++        return -ENOTSUP;
++    }
++    host_sensor_ncpus = sysconf(_SC_NPROCESSORS_CONF);
++    if (host_sensor_ncpus <= 0) {
++        return -EINVAL;
++    }
++    host_sensor_msr_fds = g_new(int, host_sensor_ncpus);
++    for (i = 0; i < host_sensor_ncpus; i++) {
++        host_sensor_msr_fds[i] = -2; /* not opened yet */
++    }
++    qemu_mutex_init(&host_sensor_lock);
++
++    for (i = 0; i < ARRAY_SIZE(msrs); i++) {
++        ret = kvm_filter_msr(s, msrs[i], kvm_rdmsr_host_sensor,
++                             kvm_wrmsr_host_sensor);
++        if (ret < 0) {
++            error_report("host-sensors: could not install handler for "
++                         "MSR 0x%x: %s", msrs[i], strerror(-ret));
++            return ret;
++        }
++    }
++    done = true;
++    return 0;
++}
++
+ int kvm_arch_init_vcpu(CPUState *cs)
+ {
+     struct {
+@@ -2250,6 +2350,13 @@ int kvm_arch_init_vcpu(CPUState *cs)
+         }
+     }
+ 
++    if (cpu->host_sensors) {
++        r = kvm_enable_host_sensor_msrs(cs->kvm_state);
++        if (r < 0) {
++            return r;
++        }
++    }
++
+     memset(&cpuid_data, 0, sizeof(cpuid_data));
+ 
+     cpuid_i = 0;

@@ -3,6 +3,24 @@
 Пересборка пакетов проекта [AICodo/pve-emu-realpc](https://github.com/AICodo/pve-emu-realpc)
 без единого бинарника от автора. Цель — PVE 9 (pve-qemu 11.1.3-4, pve-edk2-firmware 4.2026.08-1).
 
+## Что входит и что нет
+
+Воспроизводится **открытая часть** проекта — то, для чего автор публикует исходники
+(sed-патчи, `smbios.c`, `qemu-autoGenPatch.patch`, патчи из
+[`qemu-emu-realpc`](https://github.com/AICodo/qemu-emu-realpc), edk2- и seabios-патчи,
+`.aml`). Всё это собирается здесь из официальных исходников Proxmox.
+
+**Не воспроизводится как копия** закрытая часть «Strong», у которой автор исходников не даёт:
+
+- `kvm.ko` (подменённый модуль ядра: прячет гипервызовы и т. п.) — **пока не реализовано**;
+  планируется как открытый патч к ядру Proxmox, а не копия бинарника автора;
+- Strong-сборка QEMU с пробросом датчиков CPU — заменяется **открытой реализацией**
+  (`qemu/host-sensors.patch`, `HOST_SENSORS=1`), это замена, а не копия;
+- скрипты `1plus/2plus/3StrongStart/3StrongEnd.sh` — исходники нигде не опубликованы.
+
+Пока собирается только x86-64 под PVE 9. Сборок под старые PVE (7.x/8.x) и проверенной
+ARM64-сборки здесь нет.
+
 ## Откуда что берётся
 
 | Компонент | Источник | Как проверяется |
@@ -10,6 +28,7 @@
 | QEMU | `git.proxmox.com/git/pve-qemu.git` @ `242e15da…` | хэш коммита сверяется в `build.sh`; подмодули и meson-subprojects закреплены хэшами внутри |
 | OVMF | `git.proxmox.com/git/pve-edk2-firmware.git` @ `f37039e5…` | то же |
 | Правки QEMU | `qemu/anti-detection.sh`, `qemu/smbios.patch` | текст; каждая замена обязана сработать, иначе сборка падает |
+| Датчики CPU (опц.) | `qemu/host-sensors.patch` (`HOST_SENSORS=1`) | открытая замена Strong-функции; через MSR-filter отдаёт гостю термо- и perf-MSR хоста (Intel) |
 | Правки OVMF | `edk2/anti-detection.sh` | то же |
 | SeaBIOS | подмодуль QEMU (`roms/seabios`) + `seabios/seabios.patch` | собирается из исходников вместо готовых `bios*.bin` |
 | ACPI (`ssdt*.aml`, `hpet.aml`) | `acpi/*.dsl` (декомпилированы из файлов автора) | компилируются `iasl`; результат **побайтно совпадает** с файлами автора (`SHA256SUMS.author`) |

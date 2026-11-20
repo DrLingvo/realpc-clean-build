@@ -57,6 +57,8 @@ blob = open(qemu_bin, "rb").read()
 for bad in (b"QEMU HARDDISK", b"QEMU DVD-ROM", b"QEMU Virtual CPU", b"KVMKVMKVM\0",
             b"QEMU USB Tablet", b"aiiaicodo", b"114514", b"BOCHS ", b"BXPC"):
     check(bad not in blob, f"qemu-system-x86_64 contains no {bad!r}")
+# host-sensors is compiled in when the qemu build ran with HOST_SENSORS=1 (CI does this)
+check(b"host-sensors" in blob, "qemu-system-x86_64 exposes the host-sensors CPU property")
 
 # ---------------------------------------------------------------- OVMF
 found_proxmox = False
