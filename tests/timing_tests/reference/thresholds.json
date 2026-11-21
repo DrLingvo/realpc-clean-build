@@ -1,0 +1,48 @@
+{
+  "_comment": "Detectability thresholds. The robust signals are SHAPE/ratio based (coefficient of variation, timer-ratio stability, capability presence), not absolute cycle counts, which depend on CPU frequency and microarchitecture. Absolute cycle bounds are given only as coarse sanity rails. Sources: Intel SDM Vol.3; AMD PPR; and measured ranges. Treat these as advisory — tune per host.",
+  "_updated": "2026-11-22",
+
+  "rdtsc_cpuid_rdtsc": {
+    "_source": "Intel SDM + measured (Coffee Lake / Zen3)",
+    "vm_like_if": "cv < 0.08 AND median > 800",
+    "cv_min_native": 0.08,
+    "median_cycles_native_max": 800,
+    "comment": "The tell is a HIGH latency with LOW variance. On bare metal cpuid is a few hundred cycles with cv > 0.1; on plain KVM it is a VM-exit (>1000 cyc) with cv < 0.05. This is a KNOWN-HARD case: on vanilla KVM it cannot be hidden and will usually read VM-like."
+  },
+
+  "cache_latency": {
+    "_source": "Intel SDM Vol.3B Table B-6, AMD PPR",
+    "l1_cycles_max": 8,
+    "l2_cycles_max": 20,
+    "l3_cycles_max": 80,
+    "ram_cycles_min": 120,
+    "comment": "Under EPT/NPT a guest is close to native; mainly characterizes the host. Flags only grossly wrong values (e.g. L1 > 8 cyc)."
+  },
+
+  "tsc_sync": {
+    "_source": "Intel SDM 11.5.3 Invariant TSC",
+    "min_abs_offset_max": 200,
+    "comment": "Cross-core |offset| should be small and stable. Large/negative offsets or big spread indicate non-invariant or trapped TSC."
+  },
+
+  "hpet_tsc_ratio": {
+    "_source": "invariant TSC vs kernel timekeeping",
+    "ratio_cv_max": 0.002,
+    "comment": "TSC-per-ns ratio must be stable (cv < 0.2%). Drift suggests rescaled/trapped TSC."
+  },
+
+  "pmu_check": {
+    "_source": "Intel SDM Vol.3C PMU",
+    "min_version": 1,
+    "min_gp_counters": 2,
+    "min_gp_width": 40,
+    "comment": "A real CPU exposes an architectural PMU. version 0 / 0 counters = no PMU = VM tell. Raise to version>=4, gp>=4 to require a modern profile."
+  },
+
+  "rapl_check": {
+    "_source": "Intel SDM Vol.3D RAPL",
+    "require_available": true,
+    "require_increasing": true,
+    "comment": "With host-sensors passthrough the guest should see RAPL present and package energy increasing. Absent/zero = no passthrough (and a VM tell if the profile claims a real CPU)."
+  }
+}
