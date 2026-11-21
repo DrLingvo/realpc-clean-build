@@ -49,6 +49,14 @@ MEM_CLASS = {
 }
 FF_NAME = {DIMM: "DIMM", SODIMM: "SODIMM"}
 
+# board maker -> PCI subsystem vendor id (for STRONG_SUBSYS_IDS, so onboard devices carry the
+# board's id instead of 0x1af4 Red Hat)
+SUBSYS_VENDOR = {
+    "ASUSTeK COMPUTER INC.": 0x1043, "Micro-Star International Co., Ltd.": 0x1462,
+    "Gigabyte Technology Co., Ltd.": 0x1458, "Maxsun": 0x1462, "LENOVO": 0x17AA,
+    "Dell Inc.": 0x1028, "HP": 0x103C, "Supermicro": 0x15D9,
+}
+
 AMI = "American Megatrends International, LLC."
 
 PLATFORMS = {
@@ -161,6 +169,8 @@ def gen(platform, kind, host_sensors):
         "MEM_VCFG": str(mem_volt),
         "CPU_SOCKET": p["socket"],
         "IDE_SERIAL_PREFIX": ide_prefix,
+        "SUBSYS_VENDOR_HEX": f"0x{SUBSYS_VENDOR.get(board_vendor, 0x1043):04x}",
+        "SUBSYS_DEVICE_HEX": f"0x{random.randint(0x8000, 0x8fff):04x}",
     }
 
     hs = ",host-sensors=on" if host_sensors and p["cpu_vendor"].startswith("Intel") else ""
@@ -208,8 +218,9 @@ def main():
     envp = os.path.join(a.out, "profile.env")
     argp = os.path.join(a.out, "profile.args")
     with open(envp, "w") as f:
-        f.write("# Build-time profile overrides. Merge into config.env and rebuild QEMU ONLY if\n")
-        f.write("# the memory type/form factor below differ from your current build.\n")
+        f.write("# Build-time profile overrides. Merge into config.env and rebuild QEMU if the\n")
+        f.write("# memory type/form factor below differ from your build, or to apply the subsystem\n")
+        f.write("# ids (those need STRONG_SUBSYS_IDS=1 in config.env).\n")
         for k, v in env.items():
             f.write(f'{k}="{v}"\n' if " " in v else f"{k}={v}\n")
     with open(argp, "w") as f:

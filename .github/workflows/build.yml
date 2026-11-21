@@ -53,12 +53,16 @@ jobs:
 
       # Source clones (pve-qemu + submodules, pve-edk2 + submodules). Only the .git object
       # stores are kept (the container trims working trees after the build), so this is bounded
-      # and lets the next run skip re-downloading gigabytes. Keyed on the pinned commits.
+      # and lets the next run skip re-downloading gigabytes. Keyed on the pinned commits only,
+      # so changing build options in config.env does not invalidate the clone cache.
+      - name: Source cache key from pinned commits
+        id: pin
+        run: echo "key=$(grep -E '^PVE_(QEMU|EDK2)_COMMIT=' config.env | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
       - name: Restore sources
         uses: actions/cache@v4
         with:
           path: .cache/work
-          key: src-${{ matrix.stage }}-${{ hashFiles('config.env') }}
+          key: src-${{ matrix.stage }}-${{ steps.pin.outputs.key }}
           restore-keys: src-${{ matrix.stage }}-
 
       - name: Build ${{ matrix.stage }} in debian:trixie
