@@ -3,8 +3,23 @@ name: build
 on:
   push:
     branches: [main]
-    paths-ignore: ['**.md', 'tests/**', 'ci/container-test.sh', '.github/workflows/test.yml']
+    paths-ignore:
+      - '**.md'
+      - 'tests/**'
+      - 'tools/**'
+      - 'profiles/**'
+      - 'deploy/**'
+      - 'kernel/**'
+      - 'LICENSE'
+      - 'ci/container-test.sh'
+      - '.github/workflows/test.yml'
+      - '.github/workflows/release.yml'
   workflow_dispatch:
+
+# Only one build per ref; a newer push cancels an in-progress older one.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
