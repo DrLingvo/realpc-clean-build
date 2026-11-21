@@ -1,1 +1,0 @@
-{"test":"rapl_check","available":false,"reason":"no /dev/cpu/0/msr (root? modprobe msr?)"}
