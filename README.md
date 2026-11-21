@@ -59,8 +59,12 @@ CI это не загружает и не тестирует — только п
 Готовые пакеты собираются в CI (workflow **build**) и публикуются в Releases (workflow
 **release**, по тегу `v*`). На хосте PVE 9:
 
-- `deploy/install-userspace.sh <каталог>` — ставит `.deb` (QEMU с доступным `host-sensors`,
-  OVMF), кладёт `.aml`, делает `apt-mark hold`. Откат: `--revert`. Безопасно (это пакеты).
+- `deploy/realpc-setup.sh` — скрипт «всё в одном» (режимы `check|normal|strong|configvm|rollback`):
+  сам качает релиз нашего репозитория (или берёт файлы из `--dir`), ставит пакеты, в `strong`
+  собирает и ставит наш `kvm.ko` на хосте, в `configvm` вписывает `args` с `host-sensors=on`,
+  ведёт журнал и умеет откат. Пример: `./realpc-setup.sh --mode normal --yes`.
+- `deploy/install-userspace.sh <каталог>` — простой вариант: ставит `.deb` (QEMU с доступным
+  `host-sensors`, OVMF), кладёт `.aml`, делает `apt-mark hold`. Откат: `--revert`.
 - `deploy/vm.example.conf` — пример конфига ВМ (по образцу авторского), с `host-sensors=on`.
 - датчики CPU в ггосте: `host-sensors=on` в `-cpu` (Intel), нужен модуль ядра `msr` на хосте.
 

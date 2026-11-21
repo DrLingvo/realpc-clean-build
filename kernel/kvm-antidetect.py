@@ -93,5 +93,10 @@ src = replace_body(
     "emulator_fix_hypercall",
 )
 
+# 3. A verifiable marker in the module metadata, so tools can confirm the running kvm.ko is
+#    this build:  modinfo kvm | grep realpc   ->   realpc: antidetect
+if "MODULE_INFO(realpc" not in src:
+    src = src.rstrip() + '\n\nMODULE_INFO(realpc, "antidetect");\n'
+
 open(path, "w").write(src)
 print("done:", path)
