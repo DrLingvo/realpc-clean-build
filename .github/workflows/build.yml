@@ -26,6 +26,26 @@ jobs:
           sudo docker image prune -af >/dev/null
           df -h /
 
+      # Compiler cache: the dominant cost is recompiling QEMU/edk2. ccache makes an unchanged-
+      # source rebuild near-instant. Keyed per-run so each run refreshes it; restore-keys pull
+      # the most recent previous cache.
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: .cache/ccache
+          key: ccache-${{ matrix.stage }}-${{ github.run_id }}
+          restore-keys: ccache-${{ matrix.stage }}-
+
+      # Source clones (pve-qemu + submodules, pve-edk2 + submodules). Only the .git object
+      # stores are kept (the container trims working trees after the build), so this is bounded
+      # and lets the next run skip re-downloading gigabytes. Keyed on the pinned commits.
+      - name: Restore sources
+        uses: actions/cache@v4
+        with:
+          path: .cache/work
+          key: src-${{ matrix.stage }}-${{ hashFiles('config.env') }}
+          restore-keys: src-${{ matrix.stage }}-
+
       - name: Build ${{ matrix.stage }} in debian:trixie
         run: |
           stages="${{ matrix.stage }}"
@@ -33,7 +53,13 @@ jobs:
           # exercise the host-sensors patch in CI (verifies it applies + compiles);
           # the committed default in config.env stays off
           [ "$stages" = qemu ] && sed -i 's/^HOST_SENSORS=0/HOST_SENSORS=1/' config.env
-          docker run --rm -v "$PWD":/kit -w /kit debian:trixie bash ci/container-build.sh "$stages"
+          mkdir -p .cache/ccache .cache/work
+          docker run --rm -v "$PWD":/kit -w /kit \
+            -v "$PWD/.cache/ccache":/ccache -e CCACHE_DIR=/ccache \
+            -v "$PWD/.cache/work":/build -e WORK=/build \
+            debian:trixie bash ci/container-build.sh "$stages"
+          # make the caches readable by the (non-root) runner user for the cache save step
+          sudo chown -R "$(id -u):$(id -g)" .cache
 
       - uses: actions/upload-artifact@v5
         with:

@@ -11,7 +11,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
-apt-get install -y --no-install-recommends ca-certificates curl gnupg sudo
+apt-get install -y --no-install-recommends ca-certificates curl gnupg sudo ccache
 
 KEYRING=/usr/share/keyrings/proxmox-archive-keyring.gpg
 if [ -f "$here/proxmox-archive-keyring.gpg" ]; then
@@ -32,5 +32,24 @@ Signed-By: $KEYRING
 EOF
 
 apt-get update
+
+# Compiler cache (mounted + cached by the workflow at CCACHE_DIR). Putting /usr/lib/ccache
+# first makes gcc/g++/cc/c++ resolve to the ccache wrappers during the QEMU/edk2 build.
+export CCACHE_DIR="${CCACHE_DIR:-/ccache}"
+mkdir -p "$CCACHE_DIR"
+export PATH="/usr/lib/ccache:$PATH"
+update-ccache-symlinks 2>/dev/null || true
+ccache -M 2G >/dev/null 2>&1 || true
+ccache -z  >/dev/null 2>&1 || true
+
 cd "$here/.."
-STAGES="${1:-qemu edk2 acpi}" WORK=/build ./build.sh
+STAGES="${1:-qemu edk2 acpi}" WORK="${WORK:-/build}" ./build.sh
+
+echo "=== ccache stats ==="; ccache -s 2>/dev/null || true
+
+# Trim the cached source trees: keep only each repo's .git object store (bounded cache); the
+# next run re-checks out from it instead of re-cloning. Submodule objects live under .git/modules.
+for d in "${WORK:-/build}"/pve-qemu "${WORK:-/build}"/pve-edk2-firmware; do
+  [ -d "$d/.git" ] || continue
+  ( cd "$d" && find . -maxdepth 1 -mindepth 1 ! -name .git -exec rm -rf {} + ) || true
+done

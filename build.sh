@@ -40,8 +40,16 @@ $SUDO apt-get install -y --no-install-recommends git ca-certificates devscripts 
 # clone_pinned <name> <commit>: clone from git.proxmox.com and verify the commit
 clone_pinned() {
   local name=$1 commit=$2
+  # A restored CI cache may leave only .git (working tree trimmed). Reuse it, but fall back to a
+  # fresh clone if it is corrupt or unfetchable, so the cache can never wedge the build.
+  if [ -d "$WORK/$name/.git" ] && ! git -C "$WORK/$name" rev-parse --git-dir >/dev/null 2>&1; then
+    rm -rf "$WORK/$name"
+  fi
   if [ ! -d "$WORK/$name/.git" ]; then git clone "$PVE_GIT/$name.git" "$WORK/$name"; fi
-  git -C "$WORK/$name" fetch -q origin
+  git -C "$WORK/$name" fetch -q origin || {
+    echo "fetch failed for $name; recloning" >&2
+    rm -rf "$WORK/$name"; git clone "$PVE_GIT/$name.git" "$WORK/$name"; git -C "$WORK/$name" fetch -q origin
+  }
   git -C "$WORK/$name" checkout -q --detach "$commit"
   git -C "$WORK/$name" reset -q --hard "$commit"
   git -C "$WORK/$name" clean -qfdx
