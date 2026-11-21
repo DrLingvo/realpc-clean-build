@@ -26,9 +26,11 @@ static void pin_to_cpu(int cpu) {
 
 int main(int argc, char **argv) {
     int samples = DEFAULT_SAMPLES, json = 0;
+    const char *dump_raw = NULL;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--json")) json = 1;
         else if (!strcmp(argv[i], "--samples") && i + 1 < argc) samples = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--dump-raw") && i + 1 < argc) dump_raw = argv[++i];
     }
     pin_to_cpu(0);
     double tsc_hz = calibrate_tsc_hz();
@@ -39,6 +41,13 @@ int main(int argc, char **argv) {
     for (int i = 0; i < samples; i++) data[i] = measure_cpuid_latency();
 
     struct stats s = compute_stats(data, samples);
+    /* optional: dump the raw per-sample cycle counts (binary uint64) so jitter_report.py
+     * can model the effect of VM_EXIT_JITTER on the real distribution, not a synthetic one. */
+    if (dump_raw) {
+        FILE *f = fopen(dump_raw, "wb");
+        if (f) { fwrite(data, sizeof(uint64_t), samples, f); fclose(f); }
+        else perror("fopen --dump-raw");
+    }
     free(data);
     double median_ns = tsc_hz > 0 ? s.median * 1e9 / tsc_hz : 0;
 

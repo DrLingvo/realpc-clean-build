@@ -59,6 +59,33 @@ SUBSYS_VENDOR = {
 
 AMI = "American Megatrends International, LLC."
 
+# Nominal base frequency (Hz) per CPU model, matched by substring of the model string.
+# This is the frequency a detector expects from CPUID.16H / the model's spec sheet, and the
+# rate the invariant TSC ticks at on that part. Used only when --tsc-pin is set, to make the
+# reported/measured TSC frequency agree with the CPU we claim in SMBIOS. Values are the
+# advertised base clocks (Intel ARK / AMD spec).
+CPU_BASE_HZ = {
+    "i5-12400": 2_500_000_000, "i5-13400": 2_500_000_000,
+    "i7-12700K": 3_600_000_000, "i7-13700K": 3_400_000_000,
+    "i5-10400": 2_900_000_000, "i5-11400": 2_600_000_000,
+    "i7-10700K": 3_800_000_000, "i7-11700K": 3_600_000_000,
+    "i5-1240P": 1_700_000_000, "i7-1355U": 1_700_000_000,
+    "i7-12700H": 2_300_000_000, "i7-13700H": 2_400_000_000,
+    "Ryzen 5 7600": 3_800_000_000, "Ryzen 7 7700": 3_800_000_000,
+    "Ryzen 7 7800X3D": 4_200_000_000, "Ryzen 9 7900X": 4_700_000_000,
+    "Ryzen 5 5600G": 3_900_000_000, "Ryzen 5 5600": 3_500_000_000,
+    "Ryzen 7 5800X": 3_800_000_000, "Ryzen 7 5700X": 3_400_000_000,
+    "Silver 4314": 2_400_000_000, "Gold 5318Y": 2_100_000_000, "Gold 6338": 2_000_000_000,
+}
+
+
+def cpu_base_hz(cpu_name):
+    # longest key first so "Ryzen 5 5600G" wins over "Ryzen 5 5600"
+    for key in sorted(CPU_BASE_HZ, key=len, reverse=True):
+        if key in cpu_name:
+            return CPU_BASE_HZ[key]
+    return None
+
 PLATFORMS = {
     "intel_desktop_lga1700": {
         "socket": "LGA1700", "mem_class": "ddr4_dimm", "cpu_vendor": "Intel(R) Corporation",
@@ -136,7 +163,7 @@ def rnd_alnum(n):
     return "".join(random.choice("ABCDEFGHJKLMNPQRSTUVWXYZ0123456789") for _ in range(n))
 
 
-def gen(platform, kind, host_sensors):
+def gen(platform, kind, host_sensors, pmu=True, tsc_pin=False):
     p = PLATFORMS[platform]
     mem_type, mem_form, mem_volt, kits = MEM_CLASS[p["mem_class"]]
     cpus = p["cpus_gaming"] if kind == "gaming" else p["cpus_neutral"]
@@ -173,10 +200,21 @@ def gen(platform, kind, host_sensors):
         "SUBSYS_DEVICE_HEX": f"0x{random.randint(0x8000, 0x8fff):04x}",
     }
 
-    hs = ",host-sensors=on" if host_sensors and p["cpu_vendor"].startswith("Intel") else ""
+    # -cpu options: a real CPU exposes an architectural PMU (CPUID.0AH) and a fixed TSC
+    # frequency. pmu=on turns on KVM's in-guest PMU so CPUID.0AH is non-zero (its absence is
+    # a VM tell). tsc-frequency pins the reported/measured TSC rate to the claimed model's
+    # base clock (opt-in; see the warning in main()).
+    cpu_opts = ["host", "host-cache-info=on", "hypervisor=off",
+                "vmware-cpuid-freq=false", "enforce=false", "host-phys-bits=true"]
+    if pmu:
+        cpu_opts.append("pmu=on")
+    tsc_hz = cpu_base_hz(cpu) if tsc_pin else None
+    if tsc_pin and tsc_hz:
+        cpu_opts.append(f"tsc-frequency={tsc_hz}")
+    if host_sensors and p["cpu_vendor"].startswith("Intel"):
+        cpu_opts.append("host-sensors=on")
     args = (
-        "-cpu host,host-cache-info=on,hypervisor=off,vmware-cpuid-freq=false,"
-        f"enforce=false,host-phys-bits=true{hs} "
+        "-cpu " + ",".join(cpu_opts) + " "
         f'-smbios type=0,vendor="{bios_vendor}",version={bios_ver},date={bios_date},release={bios_ver} '
         f'-smbios type=1,manufacturer="{board_vendor}",product="{board_model}",version="1.0",serial={board_serial},uuid={sys_uuid} '
         f'-smbios type=2,manufacturer="{board_vendor}",product="{board_model}",version="1.0",serial={board_serial} '
@@ -190,8 +228,12 @@ def gen(platform, kind, host_sensors):
         "board": f"{board_vendor} {board_model}", "socket": p["socket"],
         "memory": f"{mem_vendor} {mem_part} @ {speed} MT/s (type 0x{mem_type:02x}, {FF_NAME[mem_form]})",
         "bios": f"{bios_vendor} {bios_ver} ({bios_date})", "mac": mac, "uuid": sys_uuid,
+        "pmu": "on" if pmu else "off",
+        "tsc": (f"pinned {tsc_hz/1e9:.2f} GHz" if (tsc_pin and tsc_hz)
+                else ("host (not pinned)" if not tsc_pin
+                      else "host (no base-freq known for this model)")),
     }
-    return env, args, summary, (mem_type, mem_form)
+    return env, args, summary, (mem_type, mem_form), (tsc_pin and tsc_hz is not None)
 
 
 def main():
@@ -201,6 +243,12 @@ def main():
     ap.add_argument("--seed", type=int)
     ap.add_argument("--out", default=".")
     ap.add_argument("--host-sensors", type=int, default=1)
+    ap.add_argument("--pmu", type=int, default=1,
+                    help="expose an architectural PMU to the guest (default on; its absence "
+                         "is a VM tell)")
+    ap.add_argument("--tsc-pin", type=int, default=0,
+                    help="pin tsc-frequency to the claimed CPU's base clock (default off; "
+                         "needs host hardware TSC scaling and breaks live migration)")
     ap.add_argument("--list", action="store_true")
     a = ap.parse_args()
     if a.list:
@@ -211,7 +259,8 @@ def main():
     if a.seed is not None:
         random.seed(a.seed)
     platform = a.platform or random.choice(list(PLATFORMS))
-    env, args, summary, (mem_type, mem_form) = gen(platform, a.kind, a.host_sensors)
+    env, args, summary, (mem_type, mem_form), tsc_pinned = gen(
+        platform, a.kind, a.host_sensors, pmu=bool(a.pmu), tsc_pin=bool(a.tsc_pin))
 
     import os
     os.makedirs(a.out, exist_ok=True)
@@ -227,9 +276,22 @@ def main():
         f.write("args: " + args + "\n")
 
     print(f"Platform: {summary['platform']} ({summary['kind']})")
-    for key in ("cpu", "board", "socket", "memory", "bios", "mac"):
+    for key in ("cpu", "board", "socket", "memory", "bios", "mac", "pmu", "tsc"):
         print(f"  {key:8s}: {summary[key]}")
     print(f"\nwrote {envp} and {argp}")
+    if tsc_pinned:
+        print(
+            "\n!! tsc-frequency is PINNED. Two requirements before you use this profile:\n"
+            "   1. The host must support hardware TSC scaling, OR its real TSC must already\n"
+            "      equal the pinned value. Otherwise KVM traps every RDTSC in the guest,\n"
+            "      which is slow AND far more detectable than leaving TSC unpinned.\n"
+            "      Check:  dmesg | grep -i 'tsc.*scal'   and   check host CPUID for the\n"
+            "      VMX TSC-scaling control (Intel: Skylake-SP+/some client; AMD: Zen+).\n"
+            "   2. Live migration to a host with a different TSC rate is NOT supported.\n"
+            "   If either is a problem, regenerate without --tsc-pin (the default).")
+    elif a.tsc_pin:
+        print("\nNote: --tsc-pin was set but this CPU model has no known base clock in\n"
+              "      CPU_BASE_HZ, so tsc-frequency was left unpinned (host TSC is used).")
     default_mem = (mem_type == 0x1A and mem_form == DIMM)
     if default_mem:
         print("Memory matches the committed DDR4/DIMM default — profile.args alone is enough "

@@ -1,0 +1,1 @@
+{"test":"rdtsc_cpuid_rdtsc","samples":20000,"median":13886.0,"p95":19566.0,"p99":44406.3,"stddev":7717.17,"cv":0.5001,"min":12164,"max":537748,"median_ns":6612.4,"tsc_hz":2099999036}

@@ -4,10 +4,10 @@
 
   "rdtsc_cpuid_rdtsc": {
     "_source": "Intel SDM + measured (Coffee Lake / Zen3)",
-    "vm_like_if": "cv < 0.08 AND median > 800",
+    "vm_like_if": "median > 800 (primary); cv < 0.08 only annotates how obvious",
     "cv_min_native": 0.08,
     "median_cycles_native_max": 800,
-    "comment": "The tell is a HIGH latency with LOW variance. On bare metal cpuid is a few hundred cycles with cv > 0.1; on plain KVM it is a VM-exit (>1000 cyc) with cv < 0.05. This is a KNOWN-HARD case: on vanilla KVM it cannot be hidden and will usually read VM-like."
+    "comment": "The analyzer judges this by the MEDIAN: cpuid on bare metal is a few hundred cycles, so median > 800 means a VM-exit regardless of variance. Low cv just says the exit is steady/obvious. This is a KNOWN-HARD case: on vanilla KVM the VM-exit cannot be hidden and reads VM-like. VM_EXIT_JITTER raises cv (defeats a naive low-variance detector) but leaves the median high, so this stays KNOWN — see jitter_report.py."
   },
 
   "cache_latency": {

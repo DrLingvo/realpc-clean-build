@@ -25,7 +25,7 @@ diff --git a/target/i386/cpu.h b/target/i386/cpu.h
 index e581fee..44283ed 100644
 --- a/target/i386/cpu.h
 +++ b/target/i386/cpu.h
-@@ -454,6 +454,10 @@ typedef enum X86Seg {
+@@ -454,6 +454,17 @@ typedef enum X86Seg {
  #define MSR_IA32_SMBASE                 0x9e
  #define MSR_SMI_COUNT                   0x34
  #define MSR_CORE_THREAD_COUNT           0x35
@@ -33,6 +33,13 @@ index e581fee..44283ed 100644
 +#define MSR_IA32_THERM_STATUS_HS        0x19c
 +#define MSR_TEMPERATURE_TARGET_HS       0x1a2
 +#define MSR_IA32_PACKAGE_THERM_STATUS_HS 0x1b1
++/* RAPL: read-only energy/power counters (Intel). _HS suffix avoids clashing */
++#define MSR_RAPL_POWER_UNIT_HS          0x606
++#define MSR_PKG_ENERGY_STATUS_HS        0x611
++#define MSR_PKG_POWER_INFO_HS           0x614
++#define MSR_DRAM_ENERGY_STATUS_HS       0x619
++#define MSR_PP0_ENERGY_STATUS_HS        0x639
++#define MSR_PP1_ENERGY_STATUS_HS        0x641
  #define MSR_MTRRcap                     0xfe
  #define MSR_MTRR_MEM_TYPE_WB            0x06
  #define MSR_MTRRcap_VCNT                8
@@ -63,7 +70,7 @@ diff --git a/target/i386/kvm/kvm.c b/target/i386/kvm/kvm.c
 index c2e3fbb..12febe3 100644
 --- a/target/i386/kvm/kvm.c
 +++ b/target/i386/kvm/kvm.c
-@@ -2218,6 +2218,106 @@ static void kvm_init_pmu_info(struct kvm_cpuid2 *cpuid, X86CPU *cpu)
+@@ -2218,6 +2218,116 @@ static void kvm_init_pmu_info(struct kvm_cpuid2 *cpuid, X86CPU *cpu)
      }
  }
  
@@ -129,6 +136,16 @@ index c2e3fbb..12febe3 100644
 +        MSR_IA32_THERM_STATUS_HS,
 +        MSR_TEMPERATURE_TARGET_HS,
 +        MSR_IA32_PACKAGE_THERM_STATUS_HS,
++        /* RAPL energy counters: the guest's intel_rapl driver reads these;
++         * served from the host CPU's /dev/cpu/N/msr like the thermal MSRs.
++         * They are per-package, so on a multi-socket host a vCPU that floats
++         * across sockets can see the counter step to another package. */
++        MSR_RAPL_POWER_UNIT_HS,
++        MSR_PKG_ENERGY_STATUS_HS,
++        MSR_PKG_POWER_INFO_HS,
++        MSR_DRAM_ENERGY_STATUS_HS,
++        MSR_PP0_ENERGY_STATUS_HS,
++        MSR_PP1_ENERGY_STATUS_HS,
 +    };
 +    static bool done;
 +    int i, ret;

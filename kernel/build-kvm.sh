@@ -58,6 +58,15 @@ make olddefconfig >/dev/null
 # --- apply the open anti-detection edits -----------------------------------------------
 python3 -I "$here/kvm-antidetect.py" arch/x86/kvm/x86.c
 
+# Optional, experimental: CPUID VM-exit jitter (off by default). Even when built in it stays
+# inert until an operator sets the realpc_cpuid_jitter module parameter. See
+# tests/timing_tests/jitter_report.py for exactly what it defeats (naive low-variance
+# detectors only) and its latency cost.
+if [ "${VM_EXIT_JITTER:-0}" = "1" ]; then
+  echo "VM_EXIT_JITTER=1: adding the opt-in CPUID jitter hook"
+  python3 -I "$here/kvm-cpuid-jitter.py" arch/x86/kvm/cpuid.c
+fi
+
 # --- build just the kvm modules --------------------------------------------------------
 make prepare modules_prepare -j"$(nproc)"
 make -j"$(nproc)" M=arch/x86/kvm
