@@ -1,0 +1,23 @@
+realpc-clean-build
+==================
+
+This repository rebuilds the open parts of AICodo/pve-emu-realpc from source and adds open
+reimplementations of its closed "Strong" pieces. It distributes BUILD TOOLING, SOURCE PATCHES
+and SCRIPTS — not the upstream projects' code, which is fetched from its official sources at
+build time.
+
+Licensing
+---------
+The scripts, patches, the ACPI sources and the generators in this repository are provided under
+the GNU General Public License v2.0 (see LICENSE). GPLv2 is used because the kernel (kvm.ko) and
+QEMU edits produced here are derivative works of GPLv2 software.
+
+The upstream components built here keep their own licenses and are NOT included in this repo:
+  - Linux kernel (kvm.ko)  : GPL-2.0
+  - QEMU / pve-qemu        : GPL-2.0 (and others per file)
+  - SeaBIOS                : LGPL-3.0 / GPL-3.0
+  - EDK II / OVMF          : BSD-2-Clause-Patent
+  - Proxmox packaging      : AGPL-3.0 / GPL-2.0+
+
+No warranty. This is security-research tooling; see README for scope and the experimental,
+whole-host nature of the kernel module.
