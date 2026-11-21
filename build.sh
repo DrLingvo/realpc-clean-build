@@ -98,6 +98,15 @@ if [ "$BUILD_SEABIOS" = 1 ]; then
 fi
 ( cd "$Q" && git diff ) > "$OUT/qemu-applied.diff"
 
+# The host-sensors CPU property is a new entry in `-cpu max`; pve-qemu's packaging diffs the
+# built CPU property list against debian/recognized-CPUID-flags-x86_64 and fails if it drifts.
+# Register the new property there so that sanity check passes.
+if [ "$HOST_SENSORS" = 1 ]; then
+  flags="$WORK/pve-qemu/debian/recognized-CPUID-flags-x86_64"
+  grep -qx host-sensors "$flags" || sed -i '/^hle$/a host-sensors' "$flags"
+  grep -qx host-sensors "$flags" || { echo "could not register host-sensors in $flags" >&2; exit 1; }
+fi
+
 log "Building pve-qemu-kvm"
 make -C "$WORK/pve-qemu" deb
 cp "$WORK"/pve-qemu/pve-qemu-kvm_*.deb "$OUT/"
