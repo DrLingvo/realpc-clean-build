@@ -1,82 +1,107 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Install the kvm.ko built by build-kvm.sh, with compatibility checks, a backup and a revert.
-#
-#   !!! EXPERIMENTAL — this REPLACES a core kernel module (kvm.ko) for the WHOLE HOST. !!!
-#   Every VM on this host is affected (all lose the native KVM paravirt hypercall). The module
-#   is unsigned, so Secure Boot must be off. Keep a way to boot a previous/known-good kernel.
-#
-#   ./install-kvm.sh            # install kernel/out/kvm.ko-$(uname -r)
-#   ./install-kvm.sh --revert   # restore the backup
-#   ./install-kvm.sh --yes      # skip the confirmation prompt
+# EXPERIMENTAL: this replaces kvm.ko for the WHOLE HOST. Stop all VMs first.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 KREL=$(uname -r)
 moddir="/lib/modules/$KREL/kernel/arch/x86/kvm"
 [ "$(id -u)" -eq 0 ] || { echo "run as root" >&2; exit 1; }
 
-# locate the currently installed module, honoring kernel module compression (.zst/.xz)
-target="$(ls "$moddir"/kvm.ko* 2>/dev/null | head -1 || true)"
-[ -n "$target" ] || { echo "no kvm.ko* under $moddir" >&2; exit 1; }
+target="$(modinfo -n kvm 2>/dev/null || true)"
+case "$target" in
+  "$moddir"/kvm.ko*) [ -f "$target" ] || { echo "missing $target" >&2; exit 1; } ;;
+  *) echo "cannot resolve the active kvm.ko under $moddir" >&2; exit 1 ;;
+esac
 backup="$target.realpc-orig"
+vendor() {
+  case "$(grep -m1 '^vendor_id' /proc/cpuinfo | awk '{print $3}')" in
+    GenuineIntel) echo intel;; AuthenticAMD) echo amd;; *) return 1;;
+  esac
+}
+unload_kvm() {
+  rmmod kvm_intel 2>/dev/null || true; rmmod kvm_amd 2>/dev/null || true
+  if [ -d /sys/module/kvm ]; then rmmod kvm; fi
+}
+load_kvm() {
+  local vend; vend=$(vendor) || { echo "unknown CPU vendor" >&2; return 1; }
+  modprobe "kvm_$vend"
+  [ -d /sys/module/kvm ] || { echo "kvm did not load" >&2; return 1; }
+}
+restore() {
+  [ -f "$backup" ] || return 1
+  unload_kvm || true
+  cp -f "$backup" "$target" && depmod "$KREL" && load_kvm
+}
+no_running_vms() {
+  local run; run="$(qm list 2>/dev/null | awk '$3=="running"{print $1}' | tr '\n' ' ')"
+  [ -z "$run" ] || { echo "stop running VMs first: $run" >&2; return 1; }
+}
 
 if [ "${1:-}" = --revert ]; then
   [ -f "$backup" ] || { echo "no backup at $backup" >&2; exit 1; }
-  run="$(qm list 2>/dev/null | awk '$3=="running"{print $1}' | tr '\n' ' ')"
-  [ -z "$run" ] || { echo "stop running VMs first: $run" >&2; exit 1; }
-  rmmod kvm_intel 2>/dev/null || true; rmmod kvm_amd 2>/dev/null || true; rmmod kvm 2>/dev/null || true
-  cp -f "$backup" "$target"; depmod "$KREL"
-  modprobe "kvm_$(grep -qm1 GenuineIntel /proc/cpuinfo && echo intel || echo amd)" 2>/dev/null || true
-  echo "restored original kvm.ko from $backup"
+  no_running_vms
+  restore
+  update-initramfs -u -k "$KREL"
+  echo "restored and loaded original kvm.ko from $backup"
   exit 0
 fi
 
 yes=0; [ "${1:-}" = --yes ] && yes=1
 mod="$here/out/kvm.ko-$KREL"
 [ -f "$mod" ] || { echo "build it first (kernel/build-kvm.sh): $mod not found" >&2; exit 1; }
+modinfo "$mod" 2>/dev/null | grep -q '^realpc:' || { echo "REFUSING: no realpc marker in $mod" >&2; exit 1; }
 
-# 1) the built module carries our marker (so we know it's the patched one)
-modinfo "$mod" 2>/dev/null | grep -q '^realpc:' || { echo "REFUSING: $mod has no realpc marker — not our patched module" >&2; exit 1; }
-
-# 2) vermagic must match the running kernel's kvm module EXACTLY (version + config flags),
-#    not just the release prefix — a mismatch means it will not load.
 new_vm="$(modinfo -F vermagic "$mod")"
 cur_vm="$(modinfo -F vermagic "$target" 2>/dev/null || true)"
-echo "new vermagic: $new_vm"
-echo "cur vermagic: ${cur_vm:-<unknown>}"
+echo "new vermagic: $new_vm"; echo "cur vermagic: ${cur_vm:-<unknown>}"
 if [ -n "$cur_vm" ] && [ "$new_vm" != "$cur_vm" ]; then
-  echo "REFUSING: vermagic differs from the installed kvm.ko — it would not load." >&2; exit 1
+  echo "REFUSING: vermagic differs from the installed kvm.ko" >&2; exit 1
 fi
-case "$new_vm" in "$KREL"*) : ;; *) echo "REFUSING: vermagic does not start with $KREL." >&2; exit 1 ;; esac
-
-# 3) Secure Boot off (unsigned module), and no running VMs (kvm must be unloadable)
+case "$new_vm" in "$KREL"*) : ;; *) echo "REFUSING: wrong kernel release" >&2; exit 1 ;; esac
 if mokutil --sb-state 2>/dev/null | grep -qi enabled; then
-  echo "REFUSING: Secure Boot is enabled; an unsigned module will not load. Disable it in BIOS." >&2; exit 1
+  echo "REFUSING: Secure Boot is enabled" >&2; exit 1
 fi
-run="$(qm list 2>/dev/null | awk '$3=="running"{print $1}' | tr '\n' ' ')"
-[ -z "$run" ] || { echo "REFUSING: stop running VMs first (kvm is in use): $run" >&2; exit 1; }
+no_running_vms
 
-echo
 echo ">>> This replaces kvm.ko for the WHOLE HOST ($KREL). All VMs are affected. <<<"
-if [ "$yes" != 1 ]; then read -r -p "Proceed? [y/N] " a; [[ "$a" =~ ^[Yy]$ ]] || { echo "aborted"; exit 0; }; fi
-
-rmmod kvm_intel 2>/dev/null || true; rmmod kvm_amd 2>/dev/null || true
-rmmod kvm 2>/dev/null || { echo "kvm is busy — are all VMs stopped?" >&2; exit 1; }
-[ -f "$backup" ] || { cp -a "$target" "$backup"; echo "backup -> $backup"; }
-
-# install, matching the target's compression
-case "$target" in
-  *.zst) command -v zstd >/dev/null || { apt-get install -y --no-install-recommends zstd >/dev/null; }
-         zstd -q -f -o "$target" "$mod" ;;
-  *.xz)  xz -f -c "$mod" > "$target" ;;
-  *)     cp -f "$mod" "$target" ;;
-esac
-depmod "$KREL"; update-initramfs -u -k "$KREL" >/dev/null 2>&1 || true
-
-vend="$(grep -qm1 GenuineIntel /proc/cpuinfo && echo intel || echo amd)"
-modprobe "kvm_$vend"
-if modinfo kvm 2>/dev/null | grep -q '^realpc:'; then
-  echo "OK: patched kvm.ko loaded (modinfo realpc=antidetect)"
-else
-  echo "WARNING: module installed but the loaded kvm has no realpc marker — check manually" >&2
+if [ "$yes" != 1 ]; then
+  read -r -p "Proceed? [y/N] " a; [[ "$a" =~ ^[Yy]$ ]] || { echo "aborted"; exit 0; }
 fi
-echo "Revert anytime: $0 --revert   (backup: $backup)"
+
+# The backup is created before KVM is unloaded. Any later failure restores it automatically.
+[ -f "$backup" ] || cp -a "$target" "$backup"
+installing=1; success=0
+on_exit() {
+  rc=$?; trap - EXIT
+  if [ "${installing:-0}" = 1 ] && [ "$success" = 0 ]; then
+    echo "installation failed; restoring $backup" >&2
+    if restore; then
+      update-initramfs -u -k "$KREL" || \
+        echo "module restored, but initramfs regeneration failed; rerun update-initramfs" >&2
+    else
+      echo "AUTOMATIC RESTORE FAILED: restore $backup to $target manually" >&2
+    fi
+  fi
+  exit "$rc"
+}
+trap on_exit EXIT
+
+unload_kvm
+tmp="$target.realpc-new"; rm -f "$tmp"
+case "$target" in
+  *.zst) command -v zstd >/dev/null || apt-get install -y --no-install-recommends zstd
+         zstd -q -f -o "$tmp" "$mod" ;;
+  *.xz)  xz -f -c "$mod" > "$tmp" ;;
+  *)     cp -f "$mod" "$tmp" ;;
+esac
+chmod --reference="$target" "$tmp"; chown --reference="$target" "$tmp"
+mv -f "$tmp" "$target"
+depmod "$KREL"; update-initramfs -u -k "$KREL"
+load_kvm
+if modinfo kvm 2>/dev/null | grep -q '^realpc:'; then
+  echo "OK: patched kvm.ko installed; KVM is loaded"
+else
+  echo "installed module has no realpc marker" >&2; exit 1
+fi
+success=1; installing=0; trap - EXIT
+echo "Revert: $0 --revert   (backup: $backup)"

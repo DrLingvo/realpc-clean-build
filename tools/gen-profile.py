@@ -25,6 +25,7 @@ Platforms: intel_desktop_lga1700, intel_desktop_lga1200, amd_desktop_am5, amd_de
 import argparse
 import random
 import sys
+import uuid
 
 # memory_type byte (SMBIOS 7.18.2): DDR3=0x18 DDR4=0x1a DDR5=0x22
 # form_factor (7.18.1): DIMM=0x09 SODIMM=0x0d
@@ -163,8 +164,26 @@ def rnd_alnum(n):
     return "".join(random.choice("ABCDEFGHJKLMNPQRSTUVWXYZ0123456789") for _ in range(n))
 
 
-def gen(platform, kind, host_sensors, pmu=True, tsc_pin=False):
+def detect_host_vendor(path="/proc/cpuinfo"):
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("vendor_id") and ":" in line:
+                    return {"GenuineIntel": "intel", "AuthenticAMD": "amd"}.get(
+                        line.split(":", 1)[1].strip(), "unknown")
+    except OSError:
+        pass
+    return "unknown"
+
+
+def platform_vendor(platform):
+    return "intel" if PLATFORMS[platform]["cpu_vendor"].startswith("Intel") else "amd"
+
+
+def gen(platform, kind, host_sensors, pmu=True, tsc_pin=False, host_vendor="unknown"):
     p = PLATFORMS[platform]
+    if host_vendor != "unknown" and host_vendor != platform_vendor(platform):
+        raise ValueError(f"platform {platform} does not match {host_vendor} host CPU")
     mem_type, mem_form, mem_volt, kits = MEM_CLASS[p["mem_class"]]
     cpus = p["cpus_gaming"] if kind == "gaming" else p["cpus_neutral"]
     cpu = random.choice(cpus)
@@ -173,7 +192,7 @@ def gen(platform, kind, host_sensors, pmu=True, tsc_pin=False):
     serial17 = rnd_hex(8)
     asset17 = rnd_digits(10)
     board_serial = rnd_alnum(10)
-    sys_uuid = f"{rnd_hex(8)}-{rnd_hex(4)}-{rnd_hex(4)}-{rnd_hex(4)}-{rnd_hex(12)}".lower()
+    sys_uuid = str(uuid.UUID(int=random.getrandbits(128), version=4))
     # disk serial prefix styled after a real drive family (SSD/NVMe)
     ide_prefix = random.choice(["S4EVNF0N", "S6Z1NG0T", "50026B7", "Z9ANESAM"])[:6] + rnd_alnum(2)
     oui = random.choice(p["oui"])
@@ -211,7 +230,7 @@ def gen(platform, kind, host_sensors, pmu=True, tsc_pin=False):
     tsc_hz = cpu_base_hz(cpu) if tsc_pin else None
     if tsc_pin and tsc_hz:
         cpu_opts.append(f"tsc-frequency={tsc_hz}")
-    if host_sensors and p["cpu_vendor"].startswith("Intel"):
+    if host_sensors and host_vendor == "intel":
         cpu_opts.append("host-sensors=on")
     args = (
         "-cpu " + ",".join(cpu_opts) + " "
@@ -224,7 +243,7 @@ def gen(platform, kind, host_sensors, pmu=True, tsc_pin=False):
         "-smbios type=9 -smbios type=8"
     )
     summary = {
-        "platform": platform, "kind": kind, "cpu": cpu,
+        "platform": platform, "kind": kind, "cpu": cpu, "host_vendor": host_vendor,
         "board": f"{board_vendor} {board_model}", "socket": p["socket"],
         "memory": f"{mem_vendor} {mem_part} @ {speed} MT/s (type 0x{mem_type:02x}, {FF_NAME[mem_form]})",
         "bios": f"{bios_vendor} {bios_ver} ({bios_date})", "mac": mac, "uuid": sys_uuid,
@@ -242,11 +261,14 @@ def main():
     ap.add_argument("--kind", choices=["gaming", "neutral"], default="neutral")
     ap.add_argument("--seed", type=int)
     ap.add_argument("--out", default=".")
-    ap.add_argument("--host-sensors", type=int, default=1)
-    ap.add_argument("--pmu", type=int, default=1,
+    ap.add_argument("--host-sensors", type=int, choices=[0, 1], default=1)
+    ap.add_argument("--host-vendor", choices=["auto", "intel", "amd", "unknown"], default="auto",
+                    help="real host CPU vendor; auto reads /proc/cpuinfo and prevents a "
+                         "profile for the other vendor")
+    ap.add_argument("--pmu", type=int, choices=[0, 1], default=1,
                     help="expose an architectural PMU to the guest (default on; its absence "
                          "is a VM tell)")
-    ap.add_argument("--tsc-pin", type=int, default=0,
+    ap.add_argument("--tsc-pin", type=int, choices=[0, 1], default=0,
                     help="pin tsc-frequency to the claimed CPU's base clock (default off; "
                          "needs host hardware TSC scaling and breaks live migration)")
     ap.add_argument("--list", action="store_true")
@@ -258,9 +280,17 @@ def main():
         return
     if a.seed is not None:
         random.seed(a.seed)
-    platform = a.platform or random.choice(list(PLATFORMS))
+    host_vendor = detect_host_vendor() if a.host_vendor == "auto" else a.host_vendor
+    if host_vendor == "unknown" and not a.platform:
+        ap.error("cannot detect the host CPU vendor; specify --platform and --host-vendor explicitly")
+    compatible = [name for name in PLATFORMS
+                  if host_vendor == "unknown" or platform_vendor(name) == host_vendor]
+    platform = a.platform or random.choice(compatible)
+    if platform not in compatible:
+        ap.error(f"platform {platform} does not match the real {host_vendor} host CPU")
     env, args, summary, (mem_type, mem_form), tsc_pinned = gen(
-        platform, a.kind, a.host_sensors, pmu=bool(a.pmu), tsc_pin=bool(a.tsc_pin))
+        platform, a.kind, a.host_sensors, pmu=bool(a.pmu), tsc_pin=bool(a.tsc_pin),
+        host_vendor=host_vendor)
 
     import os
     os.makedirs(a.out, exist_ok=True)
@@ -276,7 +306,7 @@ def main():
         f.write("args: " + args + "\n")
 
     print(f"Platform: {summary['platform']} ({summary['kind']})")
-    for key in ("cpu", "board", "socket", "memory", "bios", "mac", "pmu", "tsc"):
+    for key in ("host_vendor", "cpu", "board", "socket", "memory", "bios", "mac", "pmu", "tsc"):
         print(f"  {key:8s}: {summary[key]}")
     print(f"\nwrote {envp} and {argp}")
     if tsc_pinned:

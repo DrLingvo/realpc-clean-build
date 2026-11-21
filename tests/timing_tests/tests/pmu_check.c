@@ -13,8 +13,13 @@
 int main(int argc, char **argv) {
     int json = 0; for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "--json")) json = 1;
     uint32_t a = 0, b = 0, c = 0, d = 0;
+    char vendor[13] = {0};
     unsigned max = __get_cpuid_max(0, NULL);
     unsigned version = 0, gp = 0, width = 0, fixed = 0, fwidth = 0;
+    __cpuid(0, a, b, c, d);
+    memcpy(vendor, &b, 4);
+    memcpy(vendor + 4, &d, 4);
+    memcpy(vendor + 8, &c, 4);
     if (max >= 0x0A) {
         __cpuid_count(0x0A, 0, a, b, c, d);
         version = a & 0xff;
@@ -24,11 +29,12 @@ int main(int argc, char **argv) {
         fwidth = (d >> 5) & 0xff;
     }
     if (json)
-        printf("{\"test\":\"pmu_check\",\"version\":%u,\"gp_counters\":%u,\"gp_width\":%u,"
-               "\"fixed_counters\":%u,\"fixed_width\":%u}\n",
-               version, gp, width, fixed, fwidth);
+        printf("{\"test\":\"pmu_check\",\"vendor\":\"%s\",\"version\":%u,"
+               "\"gp_counters\":%u,\"gp_width\":%u,\"fixed_counters\":%u,"
+               "\"fixed_width\":%u}\n",
+               vendor, version, gp, width, fixed, fwidth);
     else
-        printf("PMU: version %u, GP counters %u (%u-bit), fixed %u (%u-bit)\n",
-               version, gp, width, fixed, fwidth);
+        printf("PMU (%s): version %u, GP counters %u (%u-bit), fixed %u (%u-bit)\n",
+               vendor, version, gp, width, fixed, fwidth);
     return 0;
 }

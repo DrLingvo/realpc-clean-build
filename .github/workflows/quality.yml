@@ -1,0 +1,48 @@
+name: quality
+
+# Fast fail-closed checks for changes that do not need a full QEMU/OVMF rebuild.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Shell and Python syntax
+        run: |
+          find . -path './.git' -prune -o -name '*.sh' -type f -print0 | xargs -0 -n1 bash -n
+          python3 -m compileall -q tools tests kernel
+
+      - name: Unit and fixture tests
+        run: |
+          python3 -m unittest -v tests/test_gen_profile.py tests/test_kernel_injectors.py
+          python3 -m unittest -v tests/timing_tests/test_analyze.py
+          bash tests/test_setup.sh
+
+      - name: Build timing tests with strict warnings
+        run: |
+          make -C tests/timing_tests clean
+          make -C tests/timing_tests -j2 \
+            CFLAGS='-O2 -Wall -Wextra -Werror -std=gnu11 -Icommon'
+
+      - name: Verify recipe hash coverage
+        run: |
+          tools/source-hash.sh > /tmp/realpc-source-hash.txt
+          for input in tools/make-logo.py ci/container-build.sh .github/workflows/build.yml; do
+            grep -F "  $input" /tmp/realpc-source-hash.txt >/dev/null || {
+              echo "$input is missing from the recipe hash" >&2; exit 1;
+            }
+          done

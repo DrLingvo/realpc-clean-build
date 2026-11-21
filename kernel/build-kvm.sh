@@ -33,8 +33,6 @@ matches $KREL, then re-run. On Proxmox the source also lives in the pve-kernel g
 EOF
     exit 1
   fi
-  KSRC=$(find "$srcdir" -maxdepth 2 -name Makefile -path '*arch/x86*' -printf '%h\n' \
-         | sed 's#/arch/x86##' | head -1)
   KSRC=$(dirname "$(find "$srcdir" -maxdepth 3 -path '*arch/x86/kvm/Makefile' | head -1)")
   KSRC=${KSRC%/arch/x86/kvm}
 fi
@@ -54,6 +52,23 @@ fi
 # keep the exact version suffix so vermagic matches ("-pve", etc.)
 scripts/config --set-str LOCALVERSION "" >/dev/null 2>&1 || true
 make olddefconfig >/dev/null
+built_release=$(make -s kernelrelease)
+[ "$built_release" = "$KREL" ] || {
+  echo "source/config kernelrelease is '$built_release', running kernel is '$KREL'" >&2
+  echo "refusing to build against a different kernel source or LOCALVERSION" >&2; exit 1
+}
+
+# vermagic alone is not an ABI check when CONFIG_MODVERSIONS is enabled. Reuse the exact
+# running kernel's symbol CRCs instead of silently building a module that cannot load.
+if scripts/config --state MODVERSIONS 2>/dev/null | grep -qx y; then
+  symvers="/lib/modules/$KREL/build/Module.symvers"
+  [ -s "$symvers" ] || {
+    echo "CONFIG_MODVERSIONS=y, but $symvers is missing" >&2
+    echo "install the exact proxmox-headers-$KREL package or provide its Module.symvers" >&2
+    exit 1
+  }
+  cp "$symvers" Module.symvers
+fi
 
 # --- apply the open anti-detection edits -----------------------------------------------
 python3 -I "$here/kvm-antidetect.py" arch/x86/kvm/x86.c

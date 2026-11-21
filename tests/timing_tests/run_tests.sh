@@ -10,8 +10,23 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 TRANSPORT="${TRANSPORT:-qm}"
 TARGET="${1:-}"
-RES="$HERE/results/$(date +%Y%m%d-%H%M%S)"; mkdir -p "$RES"
+mkdir -p "$HERE/results"
+RES=$(mktemp -d "$HERE/results/$(date +%Y%m%d-%H%M%S)-XXXXXX")
 log(){ echo "[*] $*"; }
+
+# A guest is not a trusted source of tar paths. Extract only regular data inside RES.
+safe_extract(){
+  python3 - "$1" "$RES" <<'PY'
+import sys, tarfile
+with tarfile.open(sys.argv[1], "r:gz") as archive:
+    archive.extractall(sys.argv[2], filter="data")
+PY
+}
+
+make_archive(){
+  tar -czf /tmp/timing-tests.tar.gz -C "$HERE" \
+    --exclude=./build --exclude=./results --exclude=./__pycache__ .
+}
 
 build_and_run_remote_cmds='
   set -e; cd /root && rm -rf timing_tests && tar xzf timing-tests.tar.gz
@@ -30,25 +45,24 @@ case "$TRANSPORT" in
   qm)
     [ -n "$TARGET" ] || { echo "usage: TRANSPORT=qm $0 <vmid>" >&2; exit 1; }
     qm status "$TARGET" | grep -q "status: running" || { echo "VM $TARGET not running" >&2; exit 1; }
-    tar -czf /tmp/timing-tests.tar.gz -C "$HERE" .
+    make_archive
     log "pushing to VM $TARGET (needs qemu-guest-agent in the guest)"
-    qm guest exec-status "$TARGET" >/dev/null 2>&1 || echo "  (if this hangs, the guest agent is not running)"
     qm push "$TARGET" /tmp/timing-tests.tar.gz /root/timing-tests.tar.gz
     rm -f /tmp/timing-tests.tar.gz
     log "building + running inside guest"
     qm guest exec "$TARGET" --timeout 600 -- bash -c "$build_and_run_remote_cmds"
     qm pull "$TARGET" /tmp/results.tar.gz "$RES/results.tar.gz"
-    tar -xzf "$RES/results.tar.gz" -C "$RES"; rm -f "$RES/results.tar.gz"
+    safe_extract "$RES/results.tar.gz"; rm -f "$RES/results.tar.gz"
     ;;
   ssh)
     [ -n "$TARGET" ] || { echo "usage: TRANSPORT=ssh $0 user@host" >&2; exit 1; }
-    tar -czf /tmp/timing-tests.tar.gz -C "$HERE" .
+    make_archive
     log "copying to $TARGET"
     scp -q /tmp/timing-tests.tar.gz "$TARGET:/root/timing-tests.tar.gz"
     rm -f /tmp/timing-tests.tar.gz
     ssh "$TARGET" "bash -c '$build_and_run_remote_cmds'"
     scp -q "$TARGET:/tmp/results.tar.gz" "$RES/results.tar.gz"
-    tar -xzf "$RES/results.tar.gz" -C "$RES"; rm -f "$RES/results.tar.gz"
+    safe_extract "$RES/results.tar.gz"; rm -f "$RES/results.tar.gz"
     ;;
   *) echo "unknown TRANSPORT=$TRANSPORT (use qm|ssh|local)" >&2; exit 1 ;;
 esac

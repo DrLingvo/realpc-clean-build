@@ -14,6 +14,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <time.h>
+#include <errno.h>
 
 #define MSR_RAPL_POWER_UNIT   0x606
 #define MSR_PKG_ENERGY_STATUS 0x611
@@ -28,8 +29,11 @@ int main(int argc, char **argv) {
     int json = 0; for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "--json")) json = 1;
     int fd = open("/dev/cpu/0/msr", O_RDONLY);
     if (fd < 0) {
-        if (json) printf("{\"test\":\"rapl_check\",\"available\":false,\"reason\":\"no /dev/cpu/0/msr (root? modprobe msr?)\"}\n");
-        else printf("rapl_check: /dev/cpu/0/msr not available (need root + modprobe msr)\n");
+        const char *reason = errno == EACCES
+            ? "permission denied reading /dev/cpu/0/msr; run as root"
+            : "/dev/cpu/0/msr unavailable; load the msr module";
+        if (json) printf("{\"test\":\"rapl_check\",\"skipped\":\"%s\"}\n", reason);
+        else printf("rapl_check: SKIP: %s\n", reason);
         return 0;
     }
     unsigned long long unit = 0, e0 = 0, e1 = 0, dram = 0, pp0 = 0;

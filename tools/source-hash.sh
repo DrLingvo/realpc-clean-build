@@ -7,14 +7,24 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 files=$(git ls-files 2>/dev/null | grep -E \
-  '^(config\.env|build\.sh|qemu/.*\.(patch|sh)|edk2/.*\.sh|seabios/.*\.patch|acpi/.*\.(dsl|sh)|kernel/.*\.(py|sh))$' \
+  '^(config\.env|build\.sh|qemu/.*\.(patch|sh)|edk2/.*\.(patch|sh)|seabios/.*\.patch|acpi/.*\.(dsl|sh)|kernel/.*\.(py|sh)|ci/container-build\.sh|tools/make-logo\.py|\.github/workflows/build\.yml)$' \
   | sort || true)
 [ -n "$files" ] || { echo "run inside the git repo" >&2; exit 1; }
 
 echo "# recipe inputs:"
-# per-file hashes (so a change is easy to localize), then one combined hash
+# Per-file hashes (so a change is easy to localize), then one combined hash. External artwork
+# named in config.env is also an input: hash its contents, not its machine-specific path.
 tmp=$(mktemp)
-for f in $files; do sha256sum "$f"; done | tee "$tmp" | sed 's/^/  /'
+trap 'rm -f "$tmp"' EXIT
+set -a; . ./config.env; set +a
+{
+  for f in $files; do sha256sum "$f"; done
+  for var in LOGO_BMP BOOTSPLASH_JPG; do
+    path=${!var:-}
+    [ -n "$path" ] || continue
+    [ -f "$path" ] || { echo "$var points to a missing file: $path" >&2; exit 1; }
+    printf '%s  %s\n' "$(sha256sum "$path" | awk '{print $1}')" "$var"
+  done
+} | tee "$tmp" | sed 's/^/  /'
 echo
 echo "RECIPE-SHA256: $(sha256sum < "$tmp" | awk '{print $1}')"
-rm -f "$tmp"

@@ -1,13 +1,12 @@
 name: test
 
-# Installs the packages from the latest successful "build" run into a clean debian:trixie
-# container and runs tests/. Runs automatically after each build, on changes to the tests,
-# or by hand (Actions -> test -> Run workflow), without rebuilding anything.
+# Installs the packages from a successful "build" run into a clean debian:trixie container.
+# Both test scripts and packages are always resolved from the same source commit.
 on:
   workflow_run:
     workflows: [build]
     types: [completed]
-  workflow_dispatch:   # re-test the latest successful build without rebuilding
+  workflow_dispatch:   # re-test the latest successful main-branch build without rebuilding
 
 permissions:
   contents: read
@@ -19,20 +18,28 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
-
-      - name: Find the build run to test
+      - name: Resolve the build run and source commit
         id: run
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           if [ "${{ github.event_name }}" = workflow_run ]; then
             id="${{ github.event.workflow_run.id }}"
+            sha="${{ github.event.workflow_run.head_sha }}"
           else
-            id=$(gh run list -R "$GITHUB_REPOSITORY" -w build -s success -L 1 --json databaseId -q '.[0].databaseId')
+            json=$(gh run list -R "$GITHUB_REPOSITORY" -w build -s success \
+              --branch main --event push -L 1 --json databaseId,headSha -q '.[0]')
+            id=$(jq -r '.databaseId // empty' <<<"$json")
+            sha=$(jq -r '.headSha // empty' <<<"$json")
           fi
-          echo "Testing artifacts of build run $id"
+          [ -n "$id" ] && [ -n "$sha" ] || { echo "No successful main build found" >&2; exit 1; }
+          echo "Testing artifacts of build run $id (commit $sha)"
           echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.run.outputs.sha }}
 
       - uses: actions/download-artifact@v5
         with:

@@ -44,7 +44,8 @@ static __always_inline void realpc_cpuid_delay(void)
 
 \tif (likely(!max))
 \t\treturn;
-\tbudget = get_random_u32() % (max + 1);
+\t/* Widen before adding: max == UINT_MAX must not wrap the divisor to zero. */
+\tbudget = (u64)get_random_u32() % ((u64)max + 1);
 \tstart = rdtsc();
 \twhile (rdtsc() - start < budget)
 \t\tcpu_relax();

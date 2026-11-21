@@ -5,15 +5,23 @@ on:
     branches: [main]
     paths-ignore:
       - '**.md'
-      - 'tests/**'
-      - 'tools/**'
       - 'profiles/**'
       - 'deploy/**'
       - 'kernel/**'
       - 'LICENSE'
-      - 'ci/container-test.sh'
       - '.github/workflows/test.yml'
       - '.github/workflows/release.yml'
+      - '.github/workflows/quality.yml'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'profiles/**'
+      - 'deploy/**'
+      - 'kernel/**'
+      - 'LICENSE'
+      - '.github/workflows/test.yml'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/quality.yml'
   workflow_dispatch:
 
 # Only one build per ref; a newer push cancels an in-progress older one.

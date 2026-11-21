@@ -12,8 +12,9 @@
 
 **Не воспроизводится как копия** закрытая часть «Strong», у которой автор исходников не даёт:
 
-- `kvm.ko` (подменённый модуль ядра: прячет гипервызовы и т. п.) — **пока не реализовано**;
-  планируется как открытый патч к ядру Proxmox, а не копия бинарника автора;
+- `kvm.ko` (подменённый модуль ядра: прячет гипервызовы и т. п.) — заменён **экспериментальной
+  открытой реализацией** в `kernel/`; это не копия закрытого бинарника автора и не полное
+  воспроизведение всех его неизвестных изменений;
 - Strong-сборка QEMU с пробросом датчиков CPU — заменяется **открытой реализацией**
   (`qemu/host-sensors.patch`, `HOST_SENSORS=1`), это замена, а не копия;
 - скрипты `1plus/2plus/3StrongStart/3StrongEnd.sh` — исходники нигде не опубликованы.
@@ -37,7 +38,7 @@ ARM64-сборки здесь нет.
 Сборочный контейнер автора (`ghcr.io/aicodo/pve9docker`), его `.deb`, `bios*.bin`, `.aml`,
 `Logo.bmp`, `bootsplash.jpg` и утилиты из `tools/` не используются.
 
-## Открытая замена `kvm.ko` (Strong, Intel) — `kernel/`
+## Открытая замена `kvm.ko` (Strong, Intel/AMD) — `kernel/`
 
 Закрытый Strong-модуль ядра прячет гипервызовы KVM. Его исходников нет, поэтому поведение
 реализовано заново своим кодом в исходниках ядра:
@@ -48,7 +49,10 @@ ARM64-сборки здесь нет.
 - `kernel/build-kvm.sh` — собирает `kvm.ko` **на самом хосте** против его исходников и
   конфига, чтобы ABI (vermagic, CRC символов) точно совпал с запущенным ядром. Бинарник
   из CI сюда не кладётся сознательно: модуль обязан совпасть с конкретным ядром.
-- `kernel/install-kvm.sh` — ставит с резервной копией и проверкой vermagic; `--revert` откат.
+- `kernel/install-kvm.sh` — определяет активный модуль через `modinfo`, проверяет `kernelrelease`
+  и vermagic, сохраняет исходный файл и при сбое пытается автоматически восстановить его;
+  `--revert` выполняет ручной откат. При `CONFIG_MODVERSIONS=y` сборка также требует точный
+  `Module.symvers` из headers запущенного ядра.
 
 **Экспериментально и на весь хост.** Модуль `kvm.ko` общий: с ним все гости на хосте теряют
 родные paravirt-гипервызовы KVM. Держите резервную копию и умейте загрузиться в прежнее ядро.
@@ -59,14 +63,18 @@ CI это не загружает и не тестирует — только п
 Готовые пакеты собираются в CI (workflow **build**) и публикуются в Releases (workflow
 **release**, по тегу `v*`). На хосте PVE 9:
 
-- `deploy/realpc-setup.sh` — скрипт «всё в одном» (режимы `check|normal|strong|configvm|rollback`):
-  сам качает релиз нашего репозитория (или берёт файлы из `--dir`), ставит пакеты, в `strong`
-  собирает и ставит наш `kvm.ko` на хосте, в `configvm` вписывает `args` с `host-sensors=on`,
-  ведёт журнал и умеет откат. Пример: `./realpc-setup.sh --mode normal --yes`.
-- `deploy/install-userspace.sh <каталог>` — простой вариант: ставит `.deb` (QEMU с доступным
-  `host-sensors`, OVMF), кладёт `.aml`, делает `apt-mark hold`. Откат: `--revert`.
-- `deploy/vm.example.conf` — пример конфига ВМ (по образцу авторского), с `host-sensors=on`.
-- датчики CPU в госте: `host-sensors=on` в `-cpu` (Intel), нужен модуль ядра `msr` на хосте.
+- `deploy/realpc-setup.sh` — скрипт «всё в одном» (режимы `check|normal|strong|configvm|rollback`).
+  Он берёт QEMU, OVMF, AML и kernel-tools **только из одного выбранного релиза**, обязательно
+  проверяет их по `SHA256SUMS`, сохраняет точные исходные `.deb` и hold-state, а незавершённую
+  операцию откатывает автоматически. Пример: `bash realpc-setup.sh --mode normal --yes`.
+  Не удаляйте рабочий каталог `/root/realpc`: в нём находятся резервные копии для rollback.
+- `deploy/install-userspace.sh <каталог>` — compatibility wrapper над тем же транзакционным
+  установщиком для уже скачанного каталога релиза; `SHA256SUMS` обязателен. Откат: `--revert`.
+- `deploy/vm.example.conf` — пример конфига ВМ. `configvm` полностью заменяет существующую
+  строку `args:` (перед этим создаёт backup), поэтому дополнительные устройства из старой
+  строки нужно перенести в новую вручную. Общий MAC-prefix кластера скрипт не изменяет.
+- Датчики CPU в госте: `host-sensors=on` в `-cpu` только для Intel-хоста; на AMD генератор и
+  `configvm` отключают этот параметр. Для MSR нужен модуль `msr` на соответствующей стороне.
 
 ## Генератор профилей железа
 
@@ -82,8 +90,12 @@ python3 tools/gen-profile.py --list                 # платформы
 python3 tools/gen-profile.py --platform amd_desktop_am5 --kind gaming --out myprofile
 python3 tools/gen-profile.py --platform intel_desktop_lga1700 --tsc-pin 1 --out myprofile
 ```
+Генератор по умолчанию определяет реального вендора CPU через `--host-vendor auto`, выбирает
+только совместимую платформу и отклоняет пару «Intel-хост + AMD SMBIOS» (и наоборот). При
+недоступном `/proc/cpuinfo` задайте `--host-vendor intel|amd` и платформу явно.
+
 В `-cpu` профиль по умолчанию добавляет `pmu=on` (архитектурный PMU, иначе — признак ВМ;
-`--pmu 0` выключает) и `host-sensors=on` для Intel. `--tsc-pin 1` дополнительно пинит
+`--pmu 0` выключает) и `host-sensors=on` только для реального Intel-хоста. `--tsc-pin 1` дополнительно пинит
 `tsc-frequency` под базовую частоту заявленной модели CPU — по умолчанию выключено,
 т.к. требует аппаратного TSC-scaling на хосте и ломает миграцию (генератор печатает
 предупреждение). Готовые эталоны — в `profiles/`.
@@ -93,9 +105,11 @@ python3 tools/gen-profile.py --platform intel_desktop_lga1700 --tsc-pin 1 --out 
 Бинарники **не** побайтово воспроизводимы: edk2 вставляет случайный stack-cookie при каждой
 сборке, SeaBIOS — время сборки. Поэтому фиксируются и проверяются **входы**: апстрим-коммиты
 закреплены в `config.env`, все патчи и скрипты — текстовые. `tools/source-hash.sh` печатает
-единый `RECIPE-SHA256` рецепта (коммиты + патчи + скрипты): одинаковый хэш ⇒ одинаковые
-исходники и правки, кто бы ни собирал. Контрольные суммы самих артефактов — в `SHA256SUMS`
-релиза (совпадают у одинаковой сборочной среды, кроме отмеченных недетерминированных частей).
+единый `RECIPE-SHA256` рецепта (коммиты + патчи + скрипты + generator логотипа + CI build
+recipe + содержимое внешних `LOGO_BMP`/`BOOTSPLASH_JPG`): одинаковый хэш ⇒ одинаковые
+закреплённые исходники и правки. Это не замораживает версии пакетов из moving APT-репозиториев
+и не делает toolchain побайтово воспроизводимым. Контрольные суммы самих артефактов — в
+`SHA256SUMS` релиза.
 
 ## Ограничения детекта по таймингам
 
@@ -214,15 +228,31 @@ VM-exit/кэш/TSC/PMU/RAPL + аналайзер).
 
 ## Установка
 
-```bash
-dpkg -i pve-qemu-kvm_11.1.3-4_amd64.deb pve-edk2-firmware-ovmf_4.2026.08-1_all.deb
-apt-mark hold pve-qemu-kvm pve-edk2-firmware-ovmf   # иначе apt upgrade вернёт штатные
-cp ssdt.aml ssdt-ec.aml hpet.aml /root/              # или ssdt-battery.aml вместо ssdt.aml
-```
-Откат: `apt-mark unhold pve-qemu-kvm pve-edk2-firmware-ovmf && apt reinstall pve-qemu-kvm pve-edk2-firmware-ovmf`.
+Скачайте `realpc-setup.sh` из выбранного релиза и выполните на PVE 9:
 
-Настройка ВМ — как в README автора: OVMF + q35, SATA-диск, e1000, `balloon: 0`, тот же `args:`
-(`-acpitable file=/root/ssdt.aml …`, `-smbios type=0..17 …`, `-cpu host,hypervisor=off,…`).
+```bash
+bash realpc-setup.sh --mode normal --release latest --yes
+bash realpc-setup.sh --mode configvm --vmid 100 --yes
+```
+
+Даже при `--release latest` установщик сначала фиксирует конкретный tag через GitHub API и
+скачивает все обязательные файлы только из него. Отсутствие файла, неполный `SHA256SUMS` или
+несовпавший хэш отменяют установку. Для офлайн-каталога используйте `--download 0 --dir PATH`;
+там также обязателен корректный `SHA256SUMS`.
+
+Ручной откат пакетов, модуля и сохранённых конфигов:
+
+```bash
+bash realpc-setup.sh --mode rollback --dir /root/realpc --yes
+```
+
+`strong` дополнительно распаковывает проверенный `realpc-kernel-tools.tar.gz` из того же
+релиза и собирает модуль на хосте; никакие root-скрипты из подвижной ветки `main` не качаются.
+Перед `strong` остановите все ВМ, выключите Secure Boot и подготовьте способ загрузить прежнее
+ядро. Автоматический откат не заменяет внешний backup и консоль доступа к хосту.
+
+Настройка ВМ: OVMF + q35, SATA-диск, e1000, `balloon: 0`. Для согласованного `args:` лучше
+использовать `tools/gen-profile.py`, а не копировать серийники и UUID из примера.
 При `STRONG_PCI_IDS=1` virtio-устройства и драйверы virtio-win работать не будут.
 
 ## Проверка результата
@@ -236,9 +266,14 @@ cp ssdt.aml ssdt-ec.aml hpet.aml /root/              # или ssdt-battery.aml �
 ## Сборка в GitHub Actions
 
 `.github/workflows/build.yml` собирает QEMU и OVMF+ACPI параллельно в чистом `debian:trixie`
-(`ci/container-build.sh`), затем ставит пакеты в свежий контейнер и прогоняет проверки
-(`ci/container-test.sh`, `tests/`): дамп fw_cfg/ACPI/SMBIOS через qtest, поиск известных
-строк-утечек в бинарниках и в прошивке. Результаты — в Artifacts запуска.
+(`ci/container-build.sh`), затем workflow **test** ставит пакеты в свежий контейнер и прогоняет
+проверки (`ci/container-test.sh`, `tests/`): дамп fw_cfg/ACPI/SMBIOS через qtest, поиск известных
+строк-утечек в бинарниках и в прошивке. И тесты, и release скачивают артефакты конкретного
+build run и делают checkout того же `headSha`. Tag release не принимает successful build от
+другого коммита. Результаты — в Artifacts запуска.
+
+Отдельный быстрый workflow **quality** запускает shell/Python syntax checks, unit/fixture-тесты,
+проверку транзакционного rollback и строгую C-сборку timing tests с `-Werror`.
 
 Ключ репозитория Proxmox по умолчанию скачивается и его отпечаток печатается в логе. Чтобы не
 доверять загрузке, положите в `ci/proxmox-archive-keyring.gpg` файл
@@ -248,5 +283,6 @@ cp ssdt.aml ssdt-ec.aml hpet.aml /root/              # или ssdt-battery.aml �
 исходников (ключ — коммиты из `config.env`). Первый прогон наполняет кэш; повторные с теми же
 исходниками и патчами собираются заметно быстрее (компиляция идёт из ccache, исходники не
 перекачиваются). Для одного ref одновременно идёт только одна сборка (новый пуш отменяет
-незавершённый старый). Правки доков/скриптов (`tools/`, `deploy/`, `kernel/`, `*.md`) сборку
-не запускают.
+незавершённый старый). Правки документации, `deploy/` и `kernel/` не запускают тяжёлую
+userspace-сборку, но проходят быстрый **quality**; изменения `tools/`, тестов и CI runner
+сборку не обходят.

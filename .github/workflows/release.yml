@@ -18,20 +18,35 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
-
       - name: Resolve build run
         id: run
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           id="${{ github.event.inputs.run_id }}"
-          if [ -z "$id" ]; then
-            id=$(gh run list -R "$GITHUB_REPOSITORY" -w build -s success -L 1 --json databaseId -q '.[0].databaseId')
+          if [ "${{ github.event_name }}" = push ]; then
+            # A tag release must contain artifacts built from the tagged commit, never merely
+            # the latest successful build of some other main-branch state.
+            id=$(gh run list -R "$GITHUB_REPOSITORY" -w build -s success -L 100 \
+              --json databaseId,headSha -q ".[] | select(.headSha == \"$GITHUB_SHA\") | .databaseId" | head -1)
+            [ -n "$id" ] || { echo "No successful build for tagged commit $GITHUB_SHA" >&2; exit 1; }
+          elif [ -z "$id" ]; then
+            id=$(gh run list -R "$GITHUB_REPOSITORY" -w build -s success --branch main --event push \
+              -L 1 --json databaseId -q '.[0].databaseId')
           fi
+          [ -n "$id" ] || { echo "No successful build run found" >&2; exit 1; }
+          conclusion=$(gh run view "$id" -R "$GITHUB_REPOSITORY" --json conclusion -q .conclusion)
+          [ "$conclusion" = success ] || { echo "Build run $id is not successful" >&2; exit 1; }
+          sha=$(gh run view "$id" -R "$GITHUB_REPOSITORY" --json headSha -q .headSha)
           echo "id=$id" >> "$GITHUB_OUTPUT"
-          echo "Releasing artifacts from build run $id"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Releasing artifacts from build run $id (commit $sha)"
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.run.outputs.sha }}
 
       - uses: actions/download-artifact@v5
         with:
@@ -42,9 +57,22 @@ jobs:
 
       - name: Stage files and checksums
         run: |
+          shopt -s nullglob
+          qemu=(dist/pve-qemu-kvm_*_amd64.deb)
+          ovmf=(dist/pve-edk2-firmware-ovmf_*_all.deb)
+          [ "${#qemu[@]}" -eq 1 ] || { echo "Expected exactly one QEMU amd64 package" >&2; exit 1; }
+          [ "${#ovmf[@]}" -eq 1 ] || { echo "Expected exactly one OVMF package" >&2; exit 1; }
+          for file in ssdt.aml ssdt-ec.aml hpet.aml qemu-applied.diff edk2-applied.diff seabios-applied.diff; do
+            [ -s "dist/$file" ] || { echo "Missing or empty required artifact: $file" >&2; exit 1; }
+          done
           mkdir -p rel
-          cp dist/*.deb dist/*.aml rel/ 2>/dev/null || true
-          cp dist/*.diff rel/ 2>/dev/null || true
+          cp "${qemu[@]}" "${ovmf[@]}" rel/
+          cp dist/ssdt.aml dist/ssdt-ec.aml dist/hpet.aml dist/*-applied.diff rel/
+          # The installer and kernel tools come from the exact same commit as the artifacts.
+          tar -C kernel --exclude='./out' --exclude='./__pycache__' -czf rel/realpc-kernel-tools.tar.gz .
+          cp deploy/realpc-setup.sh deploy/install-userspace.sh rel/
+          printf '%s\n' "${{ steps.run.outputs.sha }}" > rel/SOURCE-COMMIT
+          echo "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ steps.run.outputs.id }}" > rel/BUILD-RUN-URL
           ( cd rel && sha256sum ./* > SHA256SUMS )
           ls -la rel
 
@@ -63,19 +91,26 @@ jobs:
         run: |
           notes=$(cat <<'EOF'
           Open, source-built packages for the pve-emu-realpc stack (PVE 9 / QEMU 11.1.3-4).
-          Built in CI from official Proxmox sources; see the build run for the exact edits
-          (qemu-applied.diff, edk2-applied.diff, seabios-applied.diff).
+          SOURCE-COMMIT and BUILD-RUN-URL identify the exact sources and CI run. The applied
+          diffs and SHA256SUMS are included.
 
-          Install on a Proxmox VE 9 host:
-            dpkg -i pve-qemu-kvm_*.deb pve-edk2-firmware-ovmf_*_all.deb
-            apt-mark hold pve-qemu-kvm pve-edk2-firmware-ovmf
-            cp ssdt.aml ssdt-ec.aml hpet.aml /root/
-          Revert: apt-mark unhold ... && apt reinstall pve-qemu-kvm pve-edk2-firmware-ovmf
+          Transactional install on a Proxmox VE 9 host (downloads and verifies this release):
+            bash realpc-setup.sh --mode normal --release ${{ steps.tag.outputs.name }} --yes
+            bash realpc-setup.sh --mode configvm --vmid VMID --yes
+          Manual rollback:
+            bash realpc-setup.sh --mode rollback --yes
 
-          pve-qemu-kvm here is built with the host-sensors CPU property available (Intel):
-          add host-sensors=on to the VM's -cpu to show host temp/MHz/power in the guest.
-          This does NOT include the closed Strong kvm.ko; see kernel/ in the repo for the
-          open kernel patch you build on the host.
+          The installer requires SHA256SUMS, backs up the exact original packages and their
+          hold state, and automatically rolls back an incomplete operation. Keep the work
+          directory (/root/realpc by default): it contains the rollback backups.
+
+          host-sensors is available on Intel hosts and includes thermal/performance/RAPL MSRs.
+          The optional open Strong mode builds kvm.ko on the host for the exact running kernel;
+          it is experimental, affects every VM, and is not boot-tested by CI.
+
+          Detection limits remain: CPUID/VM-exit median latency is still visible on ordinary
+          KVM. No release can promise full VM invisibility; run tests/timing_tests on the real
+          guest and treat ERROR/incomplete results as a failed test run, not as a pass.
           EOF
           )
           gh release create "${{ steps.tag.outputs.name }}" rel/* \
