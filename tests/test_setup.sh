@@ -36,7 +36,22 @@ if verify_assets "$WORKDIR" "${required[@]}" >/dev/null 2>&1; then
   echo "incomplete checksum manifest was accepted" >&2; exit 1
 fi
 
-# Package backup must be tied to the exact currently installed versions, not a stale .deb.
+# Package backups must match the installed payload, not merely the package version.
+make_deb(){
+  local pkg=$1 version=$2 payload=$3 out=$4 root="$TMP/deb-build-$pkg-$5"
+  rm -rf "$root"; mkdir -p "$root/DEBIAN" "$root/usr/share/$pkg" "$(dirname "$out")"
+  printf 'Package: %s\nVersion: %s\nArchitecture: amd64\nMaintainer: test\nDescription: test\n' \
+    "$pkg" "$version" > "$root/DEBIAN/control"
+  printf '%s' "$payload" > "$root/usr/share/$pkg/payload"
+  dpkg-deb --build "$root" "$out" >/dev/null
+}
+write_installed_md5(){
+  local pkg=$1 payload=$2
+  mkdir -p "$DPKG_INFO_DIR"
+  printf '%s  usr/share/%s/payload\n' "$(printf '%s' "$payload" | md5sum | awk '{print $1}')" \
+    "$pkg" > "$DPKG_INFO_DIR/$pkg.md5sums"
+}
+DPKG_INFO_DIR="$TMP/dpkg-info"
 mkdir -p "$WORKDIR/.backup/packages"
 printf stale > "$WORKDIR/.backup/packages/pve-qemu-kvm_stale_amd64.deb"
 dpkg-query(){
@@ -51,18 +66,69 @@ apt-get(){
   [[ "$1" == download ]] || return 1
   local spec=$2 pkg version
   pkg=${spec%%=*}; version=${spec#*=}
-  printf '%s' "$version" > "${pkg}_${version}_test.deb"
+  cp "$TMP/repo/${pkg}_${version}.deb" . || return 1
 }
-dpkg-deb(){
-  local file=$2 base
-  base=$(basename "$file")
-  printf '%s' "$(cut -d_ -f2 <<< "$base")"
-}
+for pkg in pve-qemu-kvm pve-edk2-firmware-ovmf; do
+  [[ "$pkg" == pve-qemu-kvm ]] && version=11.1-test || version=4.0-test
+  make_deb "$pkg" "$version" "stock-$pkg" "$TMP/repo/${pkg}_${version}.deb" stock
+  write_installed_md5 "$pkg" "stock-$pkg"
+done
 backup_packages >/dev/null
 for pkg in pve-qemu-kvm pve-edk2-firmware-ovmf; do
   backup=$(st_get "OLD_${pkg}_DEB")
   [[ -f "$backup" && "$backup" != *stale* ]] || { echo "wrong backup selected for $pkg" >&2; exit 1; }
+  package_backup_matches "$pkg" "$backup" "$(dpkg-query "$pkg")" \
+    || { echo "unverified backup selected for $pkg" >&2; exit 1; }
 done
+
+# A repeat update uses the exact archived custom release packages and never
+# replaces them with stock packages of the same version from APT.
+old_commit=cccccccccccccccccccccccccccccccccccccccc
+for pkg in pve-qemu-kvm pve-edk2-firmware-ovmf; do
+  [[ "$pkg" == pve-qemu-kvm ]] && version=11.1-test || version=4.0-test
+  make_deb "$pkg" "$version" "custom-$pkg" "$TMP/${pkg}_custom.deb" custom
+  write_installed_md5 "$pkg" "custom-$pkg"
+done
+RESOLVED_COMMIT="$old_commit"
+record_installed_packages "$TMP/pve-qemu-kvm_custom.deb" "$TMP/pve-edk2-firmware-ovmf_custom.deb"
+st_set SOURCE_COMMIT "$old_commit"
+apt-get(){ printf 'unexpected APT download\n' >> "$TMP/custom-backup.calls"; return 1; }
+backup_packages >/dev/null
+[[ ! -e "$TMP/custom-backup.calls" ]] || { echo "custom backup fell back to APT" >&2; exit 1; }
+for pkg in pve-qemu-kvm pve-edk2-firmware-ovmf; do
+  cmp "$TMP/${pkg}_custom.deb" "$(st_get "OLD_${pkg}_DEB")" >/dev/null \
+    || { echo "previous custom package was not preserved for $pkg" >&2; exit 1; }
+done
+
+# Old work directories preserve their previous downloads before asset cleanup.
+(
+  WORKDIR="$TMP/preserve-downloads"; STATE="$WORKDIR/.realpc-state"; mkdir -p "$WORKDIR"
+  cp "$TMP/pve-qemu-kvm_custom.deb" "$WORKDIR/pve-qemu-kvm_11.1-test_amd64.deb"
+  preserve_existing_packages
+  cmp "$WORKDIR/pve-qemu-kvm_11.1-test_amd64.deb" \
+    "$PRESERVED_ASSET_DIR/pve-qemu-kvm_11.1-test_amd64.deb" >/dev/null
+) || { echo "previous package downloads were not preserved" >&2; exit 1; }
+
+# If the second backup is only a same-version stock package, fail before any
+# rollback journal fields are replaced by a mixed old/new set.
+if (
+  WORKDIR="$TMP/mismatched-backup"; STATE="$WORKDIR/.realpc-state"; DPKG_INFO_DIR="$TMP/mismatch-info"
+  PRESERVED_ASSET_DIR=""; mkdir -p "$WORKDIR"
+  st_set OLD_pve-qemu-kvm_DEB previous-journal-entry
+  write_installed_md5 pve-qemu-kvm stock-pve-qemu-kvm
+  write_installed_md5 pve-edk2-firmware-ovmf custom-pve-edk2-firmware-ovmf
+  apt-get(){
+    [[ "$1" == download ]] || return 1
+    local spec=$2 pkg version
+    pkg=${spec%%=*}; version=${spec#*=}
+    cp "$TMP/repo/${pkg}_${version}.deb" . || return 1
+  }
+  backup_packages >/dev/null 2>&1
+); then
+  echo "same-version stock package was accepted as a custom backup" >&2; exit 1
+fi
+[[ $(sed -n 's/^OLD_pve-qemu-kvm_DEB=//p' "$TMP/mismatched-backup/.realpc-state") == previous-journal-entry ]] \
+  || { echo "failed backup damaged the previous rollback journal" >&2; exit 1; }
 
 # Automatic rollback must not replay state left by an earlier successful installation.
 calls="$TMP/package-calls"
