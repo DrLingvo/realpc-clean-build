@@ -113,6 +113,8 @@ TRANSACTION_MODULE=0
 TRANSACTION_VMID=""
 RESOLVED_TAG=""
 RESOLVED_COMMIT=""
+PRESERVED_ASSET_DIR=""
+DPKG_INFO_DIR="${DPKG_INFO_DIR:-/var/lib/dpkg/info}"
 
 c_red=$'\e[31m'; c_grn=$'\e[32m'; c_yel=$'\e[33m'; c_rst=$'\e[0m'
 _logw(){ [[ "$LOG" == none ]] && return 0
@@ -272,6 +274,18 @@ print(f"SHA-256 verified for {len(required)} required files")
 PY
 }
 
+preserve_existing_packages(){
+  local root="$WORKDIR/.backup/previous-downloads" f
+  mkdir -p "$root" || die "Cannot create $root"
+  PRESERVED_ASSET_DIR=$(mktemp -d "$root/assets.XXXXXX") \
+    || die "Cannot preserve the previous package downloads"
+  for f in "$WORKDIR"/pve-qemu-kvm_*_amd64.deb \
+           "$WORKDIR"/pve-edk2-firmware-ovmf_*_all.deb; do
+    [[ -f "$f" ]] || continue
+    cp -a "$f" "$PRESERVED_ASSET_DIR/" || die "Could not preserve $f for rollback"
+  done
+}
+
 fetch_assets(){
   local asset_mode=${1:-$MODE}
   mkdir -p "$WORKDIR" || die "Cannot create $WORKDIR"
@@ -307,6 +321,7 @@ PY
     source_url="$(pick "$urls" "/$CFG_SOURCE_ASSET\$")"
     [[ -n "$deb" && -n "$ov" && -n "$sums" && -n "$source_url" ]] \
       || die "Release is missing QEMU, OVMF, SOURCE-COMMIT or SHA256SUMS"
+    preserve_existing_packages
     rm -f "$WORKDIR"/pve-qemu-kvm_*_amd64.deb "$WORKDIR"/pve-edk2-firmware-ovmf_*_all.deb \
       "$WORKDIR/SHA256SUMS" "$WORKDIR/$CFG_KERNEL_ASSET" "$WORKDIR/$CFG_SOURCE_ASSET" \
       "${CFG_AML[@]/#/$WORKDIR/}"
@@ -340,26 +355,108 @@ PY
 
 find_one(){ local m=( "$WORKDIR"/$1 ); [[ -e "${m[0]}" ]] || die "No file matching $1 in $WORKDIR"
   [[ ${#m[@]} -eq 1 ]] || die "Multiple files match $1; keep only one: ${m[*]}"; echo "${m[0]}"; }
+# Accept a rollback package only when its payload matches the md5sums recorded
+# by dpkg for the installed package. The same version can also be a stock build,
+# so a version-only check is not sufficient after a custom realpc installation.
+package_backup_matches(){
+  local pkg=$1 deb=$2 version=$3 actual root expected rel path entries=0
+  [[ -f "$deb" && -f "$DPKG_INFO_DIR/$pkg.md5sums" ]] || return 1
+  actual=$(dpkg-deb -f "$deb" Package 2>/dev/null) || return 1
+  [[ "$actual" == "$pkg" ]] || return 1
+  actual=$(dpkg-deb -f "$deb" Version 2>/dev/null) || return 1
+  [[ "$actual" == "$version" ]] || return 1
+  mkdir -p "$WORKDIR/.backup/verify" || return 2
+  root=$(mktemp -d "$WORKDIR/.backup/verify/${pkg}.XXXXXX") || return 2
+  if ! dpkg-deb -x "$deb" "$root" >/dev/null 2>&1; then
+    rm -rf "$root"; return 1
+  fi
+  while read -r expected rel; do
+    [[ -z "$expected" && -z "$rel" ]] && continue
+    entries=$((entries + 1)); rel=${rel#./}; path="$root/$rel"
+    if [[ ! "$expected" =~ ^[0-9a-fA-F]{32}$ || -z "$rel" || "$rel" == /* \
+          || "$rel" == .. || "$rel" == ../* || "$rel" == */../* || "$rel" == */.. \
+          || ! -f "$path" || -L "$path" ]]; then
+      rm -rf "$root"; return 1
+    fi
+    actual=$(md5sum "$path" | awk '{print $1}')
+    if [[ "$actual" != "${expected,,}" ]]; then
+      rm -rf "$root"; return 1
+    fi
+  done < "$DPKG_INFO_DIR/$pkg.md5sums"
+  rm -rf "$root"
+  (( entries > 0 )) || return 1
+  return 0
+}
+
+find_verified_package_backup(){
+  local pkg=$1 version=$2 old_commit candidate rc
+  local candidates=()
+  old_commit="$(st_get SOURCE_COMMIT)"
+  [[ -n "$old_commit" ]] \
+    && candidates+=("$WORKDIR/.backup/installed/$old_commit/${pkg}_"*.deb)
+  [[ -n "$PRESERVED_ASSET_DIR" ]] \
+    && candidates+=("$PRESERVED_ASSET_DIR/${pkg}_"*.deb)
+  for candidate in "${candidates[@]}"; do
+    [[ -f "$candidate" ]] || continue
+    if package_backup_matches "$pkg" "$candidate" "$version"; then
+      printf '%s\n' "$candidate"; return 0
+    else
+      rc=$?; [[ "$rc" == 1 ]] || return "$rc"
+    fi
+  done
+  return 1
+}
+
 backup_packages(){
-  local dir="$WORKDIR/.backup/packages" pkg version deb pkgdir actual
+  local dir="$WORKDIR/.backup/packages" pkg version deb pkgdir candidate rc
+  local -A versions holds backups
   mkdir -p "$dir" || die "Cannot create $dir"
+  # Prepare and verify both packages before replacing any rollback journal fields.
   for pkg in pve-qemu-kvm pve-edk2-firmware-ovmf; do
     version="$(dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null)" \
       || die "$pkg is not installed; its original version is unknown"
-    st_set "OLD_${pkg}_VERSION" "$version"
-    if apt-mark showhold | grep -qx "$pkg"; then st_set "OLD_${pkg}_HOLD" 1
-    else st_set "OLD_${pkg}_HOLD" 0; fi
-    # Always download the exact installed version into a new directory. A stale
-    # .deb from an earlier run may contain a different version.
+    versions[$pkg]="$version"
+    if apt-mark showhold | grep -qx "$pkg"; then holds[$pkg]=1; else holds[$pkg]=0; fi
     pkgdir=$(mktemp -d "$dir/${pkg}.XXXXXX") || die "Cannot create a package backup directory"
     info "Backing up original $pkg=$version"
-    (cd "$pkgdir" && apt-get download "$pkg=$version") \
-      || die "Could not download backup $pkg=$version; no package changes were made"
+    if candidate="$(find_verified_package_backup "$pkg" "$version")"; then
+      :
+    else
+      rc=$?; [[ "$rc" == 1 ]] || die "Could not verify a saved package backup for $pkg"
+      candidate=""
+    fi
+    if [[ -n "$candidate" ]]; then
+      cp -a "$candidate" "$pkgdir/" || die "Could not copy the verified backup for $pkg"
+    else
+      (cd "$pkgdir" && apt-get download "$pkg=$version") \
+        || die "Could not download backup $pkg=$version; no package changes were made"
+    fi
     deb=$(find "$pkgdir" -maxdepth 1 -type f -name "${pkg}_*.deb" | head -1)
-    [[ -n "$deb" ]] || die "apt-get download did not create a backup for $pkg"
-    actual=$(dpkg-deb -f "$deb" Version) || die "Could not read the version of $deb"
-    [[ "$actual" == "$version" ]] || die "Backup $pkg has version $actual instead of $version"
-    st_set "OLD_${pkg}_DEB" "$deb"
+    [[ -n "$deb" ]] || die "No .deb backup was created for $pkg"
+    package_backup_matches "$pkg" "$deb" "$version" \
+      || die "Backup $pkg=$version does not match the installed custom package; no package changes were made"
+    backups[$pkg]="$deb"
+  done
+  for pkg in pve-qemu-kvm pve-edk2-firmware-ovmf; do
+    st_set "OLD_${pkg}_VERSION" "${versions[$pkg]}"
+    st_set "OLD_${pkg}_HOLD" "${holds[$pkg]}"
+    st_set "OLD_${pkg}_DEB" "${backups[$pkg]}"
+  done
+}
+
+record_installed_packages(){
+  local q=$1 o=$2 pkg deb version dir
+  [[ "$RESOLVED_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]] \
+    || die "Cannot archive installed packages without a source commit"
+  dir="$WORKDIR/.backup/installed/$RESOLVED_COMMIT"
+  mkdir -p "$dir" || die "Cannot create the installed package archive"
+  for pkg in pve-qemu-kvm pve-edk2-firmware-ovmf; do
+    [[ "$pkg" == pve-qemu-kvm ]] && deb="$q" || deb="$o"
+    version="$(dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null)" \
+      || die "Cannot verify the installed $pkg package"
+    package_backup_matches "$pkg" "$deb" "$version" \
+      || die "Installed $pkg does not match the verified release package; changes will be rolled back"
+    cp -a "$deb" "$dir/" || die "Could not archive the installed $deb"
   done
 }
 
@@ -376,7 +473,8 @@ install_userspace(){
   local audit; audit="$(dpkg --audit)" || die "dpkg --audit failed"
   [[ -z "$audit" ]] || { printf '%s\n' "$audit" >&2; die "Package database is unhealthy; changes will be rolled back"; }
   apt-mark hold pve-qemu-kvm pve-edk2-firmware-ovmf || die "Could not set apt hold"
-  ok "Packages installed and held (no reboot required)"
+  record_installed_packages "$q" "$o"
+  ok "Packages installed and held; exact release packages archived for future rollback"
 }
 
 record_install_state(){
