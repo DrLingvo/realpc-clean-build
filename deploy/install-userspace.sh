@@ -12,5 +12,5 @@ if [ "${1:-}" = --revert ]; then
   exec bash "$setup" --mode rollback --dir "$workdir" --download 0 --yes
 fi
 
-dir=${1:?usage: install-userspace.sh <dir with the release .deb, .aml and SHA256SUMS>}
+dir=${1:?usage: install-userspace.sh <dir with release .deb, .aml, SOURCE-COMMIT and SHA256SUMS>}
 exec bash "$setup" --mode normal --dir "$dir" --download 0 --yes
