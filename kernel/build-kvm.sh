@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build an open kvm.ko (with the anti-detection changes from kernel/kvm-antidetect.py)
-# ON the Proxmox VE host, against the exact running kernel. Building here — rather than in
-# CI — is deliberate: the module must match the running kernel's version and config exactly,
+# ON the Proxmox VE host, against the exact running kernel. Building here rather than in
+# CI is deliberate: the module must match the running kernel's version and config exactly,
 # and the only way to guarantee that ABI match is to build against this host's own source.
 #
 # EXPERIMENTAL. This replaces a core kernel module. Keep the backup this script makes and
