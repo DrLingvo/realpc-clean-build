@@ -130,6 +130,165 @@ fi
 [[ $(sed -n 's/^OLD_pve-qemu-kvm_DEB=//p' "$TMP/mismatched-backup/.realpc-state") == previous-journal-entry ]] \
   || { echo "failed backup damaged the previous rollback journal" >&2; exit 1; }
 
+# Prove with real dpkg in an isolated package database that explicit dpkg -i
+# reinstalls same-version custom payloads even when both packages are held.
+(
+  dbroot="$TMP/real-dpkg-root"
+  mkdir -p "$dbroot/var/lib/dpkg"
+  : > "$dbroot/var/lib/dpkg/status"
+  for stage in old new; do
+    make_deb pve-qemu-kvm 11.1-test "$stage-qemu" \
+      "$TMP/real-dpkg-qemu-$stage.deb" "real-dpkg-q-$stage"
+    make_deb pve-edk2-firmware-ovmf 11.1-test "$stage-ovmf" \
+      "$TMP/real-dpkg-ovmf-$stage.deb" "real-dpkg-o-$stage"
+  done
+  real_dpkg=(dpkg --force-not-root --root="$dbroot" --log="$dbroot/dpkg.log")
+  "${real_dpkg[@]}" -i "$TMP/real-dpkg-qemu-old.deb" "$TMP/real-dpkg-ovmf-old.deb" >/dev/null
+  printf 'pve-qemu-kvm hold\npve-edk2-firmware-ovmf hold\n' \
+    | "${real_dpkg[@]}" --set-selections
+  "${real_dpkg[@]}" -i "$TMP/real-dpkg-qemu-new.deb" "$TMP/real-dpkg-ovmf-new.deb" >/dev/null
+  [[ $(cat "$dbroot/usr/share/pve-qemu-kvm/payload") == new-qemu ]]
+  [[ $(cat "$dbroot/usr/share/pve-edk2-firmware-ovmf/payload") == new-ovmf ]]
+) || { echo "real same-version held dpkg reinstall failed" >&2; exit 1; }
+
+# Release installation must use only the two exact .deb files. This covers a
+# same-version custom QEMU and a held OVMF without APT downgrade/held flags.
+(
+  WORKDIR="$TMP/exact-install"; STATE="$WORKDIR/.realpc-state"; mkdir -p "$WORKDIR"
+  YES=1; TRANSACTION_PKGS=0
+  installed_qemu_version=11.1-test
+  q="$WORKDIR/pve-qemu-kvm_11.1-test_amd64.deb"
+  o="$WORKDIR/pve-edk2-firmware-ovmf_4.0-test_all.deb"
+  make_deb pve-qemu-kvm "$installed_qemu_version" release-qemu "$q" exact-install-q
+  make_deb pve-edk2-firmware-ovmf 4.0-test release-ovmf "$o" exact-install-o
+  backup_packages(){ :; }
+  record_installed_packages(){ printf 'record %s %s\n' "$1" "$2" >> "$TMP/exact-install.calls"; }
+  dpkg(){
+    printf 'dpkg' >> "$TMP/exact-install.calls"; printf ' %s' "$@" >> "$TMP/exact-install.calls"
+    printf '\n' >> "$TMP/exact-install.calls"
+    [[ "$1" == --audit ]] && return 0
+    [[ "$1" == -i && "$# == 3" ]] || return 1
+    # The release has the same version as the installed custom QEMU; dpkg -i
+    # must nevertheless be invoked rather than APT skipping it as up to date.
+    [[ $(dpkg-deb -f "$2" Version) == "$installed_qemu_version" ]] || return 1
+  }
+  apt-get(){
+    printf 'apt-get' >> "$TMP/exact-install.calls"; printf ' %s' "$@" >> "$TMP/exact-install.calls"
+    printf '\n' >> "$TMP/exact-install.calls"
+    [[ "$1" == check ]]
+  }
+  apt-mark(){
+    printf 'apt-mark' >> "$TMP/exact-install.calls"; printf ' %s' "$@" >> "$TMP/exact-install.calls"
+    printf '\n' >> "$TMP/exact-install.calls"
+  }
+  install_userspace >/dev/null
+  expected=$'dpkg --audit\napt-get check\n'
+  expected+="dpkg -i $q $o"$'\n'
+  expected+=$'dpkg --audit\napt-get check\n'
+  expected+=$'apt-mark hold pve-qemu-kvm pve-edk2-firmware-ovmf\n'
+  expected+="record $q $o"
+  [[ $(cat "$TMP/exact-install.calls") == "$expected" ]]
+  [[ "$TRANSACTION_PKGS" == 1 && $(st_get PKGS) == 1 ]]
+  ! grep -Eq 'apt-get install|allow-downgrades|allow-change-held-packages|ceph-fuse' \
+    "$TMP/exact-install.calls"
+) || { echo "exact same-version/held package installation failed" >&2; exit 1; }
+
+# A dpkg failure leaves the rollback scope armed and never falls back to APT.
+if (
+  WORKDIR="$TMP/exact-install-fail"; STATE="$WORKDIR/.realpc-state"; mkdir -p "$WORKDIR"
+  YES=1; TRANSACTION_PKGS=0
+  make_deb pve-qemu-kvm 11.1-test release-qemu \
+    "$WORKDIR/pve-qemu-kvm_11.1-test_amd64.deb" install-fail-q
+  make_deb pve-edk2-firmware-ovmf 4.0-test release-ovmf \
+    "$WORKDIR/pve-edk2-firmware-ovmf_4.0-test_all.deb" install-fail-o
+  backup_packages(){ :; }
+  dpkg(){
+    printf 'dpkg %s\n' "$1" >> "$TMP/exact-install-fail.calls"
+    [[ "$1" == --audit ]]
+  }
+  apt-get(){
+    printf 'apt-get %s\n' "$1" >> "$TMP/exact-install-fail.calls"
+    [[ "$1" == check ]]
+  }
+  install_userspace >/dev/null 2>&1
+); then
+  echo "dpkg installation failure was accepted" >&2; exit 1
+fi
+[[ $(sed -n 's/^PKGS=//p' "$TMP/exact-install-fail/.realpc-state") == 1 ]] \
+  || { echo "failed installation did not preserve rollback scope" >&2; exit 1; }
+[[ $(grep -c '^dpkg --audit$' "$TMP/exact-install-fail.calls") == 1 \
+   && $(grep -c '^apt-get check$' "$TMP/exact-install-fail.calls") == 1 ]] \
+  || { echo "failed installation ran a post-change health check incorrectly" >&2; exit 1; }
+! grep -q 'apt-get install' "$TMP/exact-install-fail.calls" \
+  || { echo "failed installation fell back to APT" >&2; exit 1; }
+
+# Automatic rollback restores only the exact archived packages, including a
+# held OVMF, and checks dependency health after both dpkg operations.
+(
+  WORKDIR="$TMP/exact-rollback"; STATE="$WORKDIR/.realpc-state"; mkdir -p "$WORKDIR"
+  q="$TMP/pve-qemu-kvm_custom.deb"; o="$TMP/pve-edk2-firmware-ovmf_custom.deb"
+  st_set PKGS 1
+  st_set OLD_pve-qemu-kvm_VERSION 11.1-test; st_set OLD_pve-qemu-kvm_HOLD 0
+  st_set OLD_pve-qemu-kvm_DEB "$q"
+  st_set OLD_pve-edk2-firmware-ovmf_VERSION 4.0-test; st_set OLD_pve-edk2-firmware-ovmf_HOLD 1
+  st_set OLD_pve-edk2-firmware-ovmf_DEB "$o"
+  TRANSACTION_PKGS=1; TRANSACTION_MODULE=0; TRANSACTION_VMID=""
+  dpkg(){
+    printf 'dpkg' >> "$TMP/exact-rollback.calls"; printf ' %s' "$@" >> "$TMP/exact-rollback.calls"
+    printf '\n' >> "$TMP/exact-rollback.calls"
+    [[ "$1" == --audit || "$1" == -i ]]
+  }
+  apt-get(){
+    printf 'apt-get' >> "$TMP/exact-rollback.calls"; printf ' %s' "$@" >> "$TMP/exact-rollback.calls"
+    printf '\n' >> "$TMP/exact-rollback.calls"
+    [[ "$1" == check ]]
+  }
+  apt-mark(){
+    printf 'apt-mark' >> "$TMP/exact-rollback.calls"; printf ' %s' "$@" >> "$TMP/exact-rollback.calls"
+    printf '\n' >> "$TMP/exact-rollback.calls"
+  }
+  rollback 1 >/dev/null
+  expected="dpkg -i $q"$'\n'$'apt-mark unhold pve-qemu-kvm\n'
+  expected+="dpkg -i $o"$'\n'$'apt-mark hold pve-edk2-firmware-ovmf\n'
+  expected+=$'dpkg --audit\napt-get check'
+  [[ $(cat "$TMP/exact-rollback.calls") == "$expected" ]]
+  [[ $(st_get PKGS) == 0 ]]
+  ! grep -Eq 'apt-get install|allow-downgrades|allow-change-held-packages|ceph-fuse' \
+    "$TMP/exact-rollback.calls"
+) || { echo "exact backup rollback failed" >&2; exit 1; }
+
+# A rollback error remains visible and keeps PKGS armed for a later retry.
+(
+  WORKDIR="$TMP/exact-rollback-fail"; STATE="$WORKDIR/.realpc-state"; mkdir -p "$WORKDIR"
+  q="$TMP/pve-qemu-kvm_custom.deb"; o="$TMP/pve-edk2-firmware-ovmf_custom.deb"
+  st_set PKGS 1
+  st_set OLD_pve-qemu-kvm_VERSION 11.1-test; st_set OLD_pve-qemu-kvm_HOLD 0
+  st_set OLD_pve-qemu-kvm_DEB "$q"
+  st_set OLD_pve-edk2-firmware-ovmf_VERSION 4.0-test; st_set OLD_pve-edk2-firmware-ovmf_HOLD 1
+  st_set OLD_pve-edk2-firmware-ovmf_DEB "$o"
+  TRANSACTION_PKGS=1; TRANSACTION_MODULE=0; TRANSACTION_VMID=""
+  dpkg(){ [[ "$1" == --audit ]] && return 0; [[ "$2" != "$o" ]]; }
+  apt-get(){ [[ "$1" == check ]]; }
+  apt-mark(){ :; }
+  if rollback 1 >/dev/null 2>&1; then
+    echo "rollback dpkg failure was masked" >&2; exit 1
+  fi
+  [[ $(st_get PKGS) == 1 ]]
+) || { echo "failed rollback state handling failed" >&2; exit 1; }
+
+# Without an exact archived .deb, rollback must not reinstall a same-version
+# stock package through APT or touch unrelated dependencies.
+(
+  WORKDIR="$TMP/no-backup-rollback"; STATE="$WORKDIR/.realpc-state"; mkdir -p "$WORKDIR"
+  st_set OLD_pve-qemu-kvm_VERSION 11.1-test; st_set OLD_pve-qemu-kvm_HOLD 0
+  apt-get(){ printf '%s\n' "$*" >> "$TMP/no-backup-rollback.calls"; return 1; }
+  apt-mark(){ :; }
+  if restore_package pve-qemu-kvm >/dev/null 2>&1; then
+    echo "rollback without an exact backup was accepted" >&2; exit 1
+  fi
+  [[ ! -e "$TMP/no-backup-rollback.calls" ]]
+) || { echo "missing-backup rollback used an unsafe fallback" >&2; exit 1; }
+
 # Automatic rollback must not replay state left by an earlier successful installation.
 calls="$TMP/package-calls"
 restore_package(){ printf '%s\n' "$1" >> "$calls"; }
