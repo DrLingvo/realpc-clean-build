@@ -31,7 +31,7 @@ ARM64-сборки здесь нет.
 | Правки QEMU | `qemu/anti-detection.sh`, `qemu/smbios.patch` | текст; каждая замена обязана сработать, иначе сборка падает |
 | Датчики CPU (опц.) | `qemu/host-sensors.patch` (`HOST_SENSORS=1`) | открытая замена Strong-функции; через MSR-filter отдаёт гостю термо-, perf- и RAPL-MSR хоста (Intel) |
 | Правки OVMF | `edk2/anti-detection.sh` | то же |
-| SeaBIOS | подмодуль QEMU (`roms/seabios`) + `seabios/seabios.patch` | собирается из исходников вместе с готовыми `bios*.bin` |
+| SeaBIOS | подмодуль QEMU (`roms/seabios`) + `seabios/seabios.patch` | собирается из исходников вместо готовых `bios*.bin` |
 | ACPI (`ssdt*.aml`, `hpet.aml`) | `acpi/*.dsl` (декомпилированы из файлов автора) | компилируются `iasl`; результат **побайтно совпадает** с файлами автора (`SHA256SUMS.author`) |
 | Логотип OVMF | генерируется (`tools/make-logo.py`) или ваш файл | чужие картинки не используются (парсер BMP в прошивке — поверхность атаки, см. LogoFAIL) |
 
