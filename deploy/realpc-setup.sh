@@ -149,20 +149,52 @@ st_set(){ mkdir -p "$WORKDIR" || die "Cannot create $WORKDIR"
           mv "$STATE.tmp" "$STATE" || die "Cannot update $STATE"; dbg "state $1=$2"; }
 st_get(){ [[ -f "$STATE" ]] && sed -n "s/^$1=//p" "$STATE" | tail -1; }
 
+package_database_healthy(){
+  local output
+  if ! output="$(dpkg --audit 2>&1)"; then
+    printf '%s\n' "$output" >&2
+    err "dpkg --audit failed"
+    return 1
+  fi
+  if [[ -n "$output" ]]; then
+    printf '%s\n' "$output" >&2
+    err "dpkg reports an unfinished or unhealthy package state"
+    return 1
+  fi
+  if ! output="$(apt-get check 2>&1)"; then
+    printf '%s\n' "$output" >&2
+    err "apt-get check reports broken dependencies"
+    return 1
+  fi
+  return 0
+}
+
 restore_package(){
-  local pkg=$1 version hold backup failed=0
+  local pkg=$1 version hold backup actual failed=0
   version="$(st_get "OLD_${pkg}_VERSION")"; hold="$(st_get "OLD_${pkg}_HOLD")"
   backup="$(st_get "OLD_${pkg}_DEB")"
-  # The backup path must belong to the exact recorded version.
+  # Only the exact archived package is eligible. A stock package with the same
+  # version is not a safe substitute for a previously installed custom build.
   if [[ -n "$backup" && ! -f "$backup" ]]; then
     err "Package backup is missing: $backup"; backup=""
   fi
-  if [[ -n "$backup" ]]; then
-    apt-get install -y --allow-downgrades "$backup" || failed=1
-  elif [[ -n "$version" ]]; then
-    apt-get install -y --allow-downgrades --reinstall "$pkg=$version" || failed=1
+  if [[ -n "$backup" && -n "$version" ]]; then
+    actual="$(dpkg-deb -f "$backup" Package 2>/dev/null)" || actual=""
+    if [[ "$actual" != "$pkg" ]]; then
+      err "Package backup has the wrong package name: $backup"; failed=1
+    else
+      actual="$(dpkg-deb -f "$backup" Version 2>/dev/null)" || actual=""
+      if [[ "$actual" != "$version" ]]; then
+        err "Package backup has the wrong version: $backup"; failed=1
+      else
+        # dpkg reinstalls same-version custom packages and ignores APT holds.
+        # It never resolves dependencies by upgrading unrelated packages.
+        dpkg -i "$backup" || failed=1
+      fi
+    fi
   else
-    warn "No saved version of $pkg; leaving the current package unchanged."; failed=1
+    err "No exact backup of $pkg=$version; leaving the current package unchanged."
+    failed=1
   fi
   if [[ "$hold" == 1 ]]; then apt-mark hold "$pkg" >/dev/null || failed=1
   else apt-mark unhold "$pkg" >/dev/null 2>&1 || failed=1; fi
@@ -197,6 +229,7 @@ rollback(){
     if [[ "$auto" == 1 ]] || confirm "Restore the original QEMU/OVMF packages from backups?"; then
       restore_package pve-qemu-kvm || failed=1
       restore_package pve-edk2-firmware-ovmf || failed=1
+      package_database_healthy || { err "Package database remains unhealthy after rollback"; failed=1; }
       [[ "$failed" == 0 ]] && st_set PKGS 0
     fi
   fi
@@ -464,14 +497,19 @@ install_userspace(){
   local q o; q="$(find_one 'pve-qemu-kvm_*_amd64.deb')"; o="$(find_one 'pve-edk2-firmware-ovmf_*_all.deb')"
   echo "QEMU: $(basename "$q")"; echo "OVMF: $(basename "$o")"
   if ! confirm "Install these packages?"; then info "Canceled by user"; return 2; fi
+  info "Checking package database before installation"
+  package_database_healthy \
+    || die "Package database is unhealthy; no package changes were made"
   backup_packages
   # Record rollback scope before the first package database change.
   st_set PKGS 1; TRANSACTION_PKGS=1
-  info "Installing both packages through apt to resolve dependencies"
-  apt-get install -y --no-install-recommends "$q" "$o" \
+  info "Installing only the two verified release packages with dpkg"
+  # APT may skip a same-version custom QEMU, reject a held/downgraded OVMF,
+  # or upgrade unrelated dependencies. dpkg installs exactly these two files.
+  dpkg -i "$q" "$o" \
     || die "Package installation failed; changes will be rolled back"
-  local audit; audit="$(dpkg --audit)" || die "dpkg --audit failed"
-  [[ -z "$audit" ]] || { printf '%s\n' "$audit" >&2; die "Package database is unhealthy; changes will be rolled back"; }
+  package_database_healthy \
+    || die "Package database is unhealthy after installation; changes will be rolled back"
   apt-mark hold pve-qemu-kvm pve-edk2-firmware-ovmf || die "Could not set apt hold"
   record_installed_packages "$q" "$o"
   ok "Packages installed and held; exact release packages archived for future rollback"
