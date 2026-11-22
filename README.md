@@ -31,7 +31,7 @@ ARM64-сборки здесь нет.
 | Правки QEMU | `qemu/anti-detection.sh`, `qemu/smbios.patch` | текст; каждая замена обязана сработать, иначе сборка падает |
 | Датчики CPU (опц.) | `qemu/host-sensors.patch` (`HOST_SENSORS=1`) | открытая замена Strong-функции; через MSR-filter отдаёт гостю термо-, perf- и RAPL-MSR хоста (Intel) |
 | Правки OVMF | `edk2/anti-detection.sh` | то же |
-| SeaBIOS | подмодуль QEMU (`roms/seabios`) + `seabios/seabios.patch` | собирается из исходников вместо готовых `bios*.bin` |
+| SeaBIOS | подмодуль QEMU (`roms/seabios`) + `seabios/seabios.patch` | собирается из исходников вместе с готовыми `bios*.bin` |
 | ACPI (`ssdt*.aml`, `hpet.aml`) | `acpi/*.dsl` (декомпилированы из файлов автора) | компилируются `iasl`; результат **побайтно совпадает** с файлами автора (`SHA256SUMS.author`) |
 | Логотип OVMF | генерируется (`tools/make-logo.py`) или ваш файл | чужие картинки не используются (парсер BMP в прошивке — поверхность атаки, см. LogoFAIL) |
 
@@ -77,9 +77,11 @@ bash realpc-setup.sh --mode update --yes
 - `deploy/realpc-setup.sh` — скрипт «всё в одном» (режимы
   `check|normal|strong|update|configvm|rollback`). Он берёт QEMU, OVMF, AML, provenance и
   kernel-tools **только из одного выбранного релиза**, обязательно проверяет их по `SHA256SUMS`,
-  сохраняет точные исходные `.deb`, hold-state и активный `kvm.ko`, а незавершённую операцию
-  откатывает автоматически. Не удаляйте рабочий каталог `/root/realpc`: в нём находятся state
-  и резервные копии для rollback.
+  сохраняет проверенные исходные `.deb`, hold-state и активный `kvm.ko`, а незавершённую операцию
+  откатывает автоматически. Backup пакета принимается только при совпадении его payload с dpkg
+  `md5sums`: одноимённая stock-версия не подменяет предыдущую custom-сборку. После установки `.deb`
+  архивируются по `SOURCE_COMMIT`, а старые загрузки сохраняются до очистки рабочего каталога.
+  Не удаляйте рабочий каталог `/root/realpc`: в нём находятся state и резервные копии для rollback.
 - После успешной установки state содержит `INSTALL_MODE`, `RELEASE_TAG`, `SOURCE_COMMIT`, а для
   strong ещё и `KERNEL_RELEASE`. `update` читает режим только из этого state: normal остаётся
   normal, strong остаётся strong. При отсутствующем или неоднозначном `INSTALL_MODE` обновление
@@ -169,7 +171,7 @@ VM-exit/кэш/TSC/PMU/RAPL + аналайзер).
 - **TSC.** Пин `tsc-frequency` в `-cpu` под заявленную модель CPU реализован в генераторе
   профилей (`gen-profile.py --tsc-pin 1`), **по умолчанию выключен**. Он делает
   измеряемую/сообщаемую частоту TSC согласованной с CPU, который мы выдаём в SMBIOS. Два
-  условия: (1) хост должен поддерживать аппаратное TSC-scaling, иначе KVM начнёт
+  условия: (1) хост должен поддерживать аппаратный TSC-scaling, иначе KVM начнёт
   перехватывать каждый RDTSC — медленно и *заметнее*, чем без пина; (2) live-migration между
   хостами с разным TSC **не поддерживается**. Поэтому опция и выключена по умолчанию.
 - **VM-exit jitter (`VM_EXIT_JITTER`, экспериментально, выкл).** Опциональный хук в нашем
