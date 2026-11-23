@@ -471,3 +471,89 @@ for failure in packages module; do
 done
 
 echo "setup update/state tests: PASS"
+
+# ---- host-tools contract with pve-intel-gpu (CONTRACT.md) ----
+# configvm keeps the args fragments of other tools, leaves vga alone while the
+# iGPU is passed through and never touches snapshot sections.
+contract_env(){
+  WORKDIR="$TMP/contract-$1"; STATE="$WORKDIR/.realpc-state"; mkdir -p "$WORKDIR/qemu" "$WORKDIR/args.d/100"
+  for name in "${CFG_AML[@]}"; do printf '%s' "$name" > "$WORKDIR/$name"; done
+  CFG_PVE_QEMU_DIR="$WORKDIR/qemu"; CFG_ARGS_D="$WORKDIR/args.d"; CFG_LOCK=""
+  VMID=100; YES=1
+  need_root(){ :; }; verify_assets(){ :; }; cpu_vendor(){ echo intel; }
+  cpu_model(){ echo "12th Gen Intel(R) Core(TM) i7-12700"; }
+  qm(){ # minimal "qm set VMID --key value ..." on the main section
+    [[ "$1" == set ]] || return 0; local c="$CFG_PVE_QEMU_DIR/$2.conf"; shift 2
+    printf '%s\n' "$*" >> "$WORKDIR/qm.calls"
+    while [[ $# -gt 1 ]]; do conf_set_main "$c" "${1#--}" "$2" || return 1; shift 2; done; }
+}
+IGD='-set device.hostpci0.bus=pcie.0 -set device.hostpci0.addr=02.0 -set device.hostpci0.x-igd-opregion=on'
+
+(
+  contract_env igpu
+  printf '%s\n' 'bios: ovmf' 'hostpci0: 0000:00:02.0,romfile=6-14-qemu10.rom' 'vga: none' "args: old $IGD" '' \
+    '[snap1]' 'args: snapshot-args' 'vga: std' > "$WORKDIR/qemu/100.conf"
+  printf '%s\n' "$IGD" > "$WORKDIR/args.d/100/50-pve-intel-gpu.args"
+  configvm >/dev/null
+  conf="$WORKDIR/qemu/100.conf"
+  args="$(conf_main_get "$conf" args)"
+  [[ "$args" == "-acpitable file=$WORKDIR/ssdt.aml"*" $IGD" ]] || { echo "fragment not appended: $args" >&2; exit 1; }
+  [[ "$(grep -o 'x-igd-opregion' <<<"$args" | wc -l)" == 1 ]] || { echo "fragment duplicated" >&2; exit 1; }
+  [[ "$(conf_main_get "$conf" vga)" == none ]] || { echo "vga changed although the iGPU is passed through" >&2; exit 1; }
+  ! grep -q -- '--vga' "$WORKDIR/qm.calls" || { echo "qm set got --vga" >&2; exit 1; }
+  sed -n '/^\[snap1\]/,$p' "$conf" | grep -qx 'args: snapshot-args' || { echo "snapshot args lost" >&2; exit 1; }
+  [[ "$(sed -n '/^\[snap1\]/,$p' "$conf" | grep -c '^args:')" == 1 ]] || { echo "args written into the snapshot" >&2; exit 1; }
+  [[ "$(st_get CONTRACT_VERSION)" == 1 ]] || { echo "CONTRACT_VERSION not recorded" >&2; exit 1; }
+) || { echo "configvm host-tools contract failed" >&2; exit 1; }
+
+# Without the iGPU and without fragments configvm behaves exactly as before.
+(
+  contract_env plain
+  printf '%s\n' 'bios: seabios' 'vga: std' 'args: old' > "$WORKDIR/qemu/100.conf"
+  configvm >/dev/null
+  conf="$WORKDIR/qemu/100.conf"
+  [[ "$(conf_main_get "$conf" args)" == "-acpitable file=$WORKDIR/ssdt.aml"*'-smbios type=8' ]] || { echo "plain args changed" >&2; exit 1; }
+  [[ "$(conf_main_get "$conf" vga)" == vmware ]] || { echo "plain vga not set" >&2; exit 1; }
+  [[ "$(conf_main_get "$conf" machine)" == q35 ]] || { echo "plain machine not set" >&2; exit 1; }
+) || { echo "plain configvm regression" >&2; exit 1; }
+
+# Manual rollback after another tool changed the VM restores only configvm keys:
+# the iGPU hostpci added later stays, vga stays none, the IGD fragment is kept.
+(
+  contract_env rollback-changed
+  printf '%s\n' 'bios: ovmf' 'vga: std' 'args: original' 'cores: 4' > "$WORKDIR/qemu/100.conf"
+  configvm >/dev/null
+  conf="$WORKDIR/qemu/100.conf"
+  # pve-intel-gpu passthrough after configvm
+  conf_set_main "$conf" hostpci0 "0000:00:02.0,romfile=6-14-qemu10.rom"; conf_set_main "$conf" vga none
+  conf_set_main "$conf" args "$(conf_main_get "$conf" args) $IGD"
+  printf '%s\n' "$IGD" > "$WORKDIR/args.d/100/50-pve-intel-gpu.args"
+  rollback 0 >/dev/null 2>&1
+  [[ "$(conf_main_get "$conf" hostpci0)" == "0000:00:02.0,romfile=6-14-qemu10.rom" ]] || { echo "hostpci lost on rollback" >&2; exit 1; }
+  [[ "$(conf_main_get "$conf" vga)" == none ]] || { echo "vga restored although the iGPU is passed through" >&2; exit 1; }
+  [[ "$(conf_main_get "$conf" args)" == "original $IGD" ]] || { echo "args not restored with the fragment: $(conf_main_get "$conf" args)" >&2; exit 1; }
+  [[ -z "$(conf_main_get "$conf" machine)" ]] || { echo "machine not removed on rollback" >&2; exit 1; }
+  [[ "$(conf_main_get "$conf" cores)" == 4 ]] || { echo "unrelated key changed" >&2; exit 1; }
+) || { echo "key-wise rollback failed" >&2; exit 1; }
+
+# Manual rollback with an unchanged config restores the backup byte for byte.
+(
+  contract_env rollback-same
+  printf '%s\n' 'bios: ovmf' 'vga: std' 'args: original' > "$WORKDIR/qemu/100.conf"
+  cp "$WORKDIR/qemu/100.conf" "$WORKDIR/orig.conf"
+  configvm >/dev/null
+  rollback 0 >/dev/null 2>&1
+  cmp -s "$WORKDIR/qemu/100.conf" "$WORKDIR/orig.conf" || { echo "unchanged config not restored whole" >&2; exit 1; }
+) || { echo "whole-file rollback regression" >&2; exit 1; }
+
+# The shared lock refuses a second host tool instead of running concurrently.
+(
+  CFG_LOCK="$TMP/pve-host-tools.lock"; CFG_LOCK_TIMEOUT=1
+  ( exec 9>"$CFG_LOCK"; flock 9; sleep 3 ) &
+  sleep 0.5
+  if (host_lock) >/dev/null 2>&1; then echo "lock held by another tool was ignored" >&2; exit 1; fi
+  wait
+  (host_lock) >/dev/null 2>&1 || { echo "free lock was refused" >&2; exit 1; }
+) || { echo "host-tools lock failed" >&2; exit 1; }
+
+echo "setup host-tools contract tests: PASS"
