@@ -33,16 +33,27 @@ CFG_YES=0                                 # 1: do not ask for confirmation
 CFG_KSRC=""                               # strong: matching kernel source tree
 CFG_MIN_FREE_MB=8192                      # strong: minimum free space in WORKDIR
 
-CFG_AML=(ssdt.aml ssdt-ec.aml hpet.aml)
+CFG_AML=(ssdt.aml ssdt-ec.aml hpet.aml wsmt.aml)
 CFG_KERNEL_ASSET="realpc-kernel-tools.tar.gz"
 CFG_SOURCE_ASSET="SOURCE-COMMIT"
 
 # __AML__ becomes the ACPI directory; __CPUMODEL__ becomes the host CPU model.
 # host-sensors=on enables the open Intel host sensor implementation.
-CFG_ARGS_TEMPLATE='-acpitable file=__AML__/ssdt.aml -acpitable file=__AML__/ssdt-ec.aml -acpitable file=__AML__/hpet.aml -cpu host,host-cache-info=on,hypervisor=off,vmware-cpuid-freq=false,enforce=false,host-phys-bits=true,pmu=on,host-sensors=on -smbios type=0,vendor="American Megatrends International LLC.",version=H3.7G,date=02/21/2023,release=3.7 -smbios type=1,manufacturer="Maxsun",product="MS-Terminator B760M",version="VER:H3.7G" -smbios type=2,manufacturer="Maxsun",product="MS-Terminator B760M",version="VER:H3.7G" -smbios type=3,manufacturer="Default string",version="Default string" -smbios type=17,serial=66666666,asset=9876543210 -smbios type=4,manufacturer="Intel(R) Corporation",version="__CPUMODEL__" -smbios type=9 -smbios type=8'
+CFG_ARGS_TEMPLATE='-acpitable file=__AML__/ssdt.aml -acpitable file=__AML__/ssdt-ec.aml -acpitable file=__AML__/hpet.aml -acpitable file=__AML__/wsmt.aml -cpu host,host-cache-info=on,hypervisor=off,vmware-cpuid-freq=false,enforce=false,host-phys-bits=true,pmu=on,host-sensors=on -device host-sensors -smbios type=0,vendor="American Megatrends International LLC.",version=H3.7G,date=02/21/2023,release=3.7 -smbios type=1,manufacturer="Maxsun",product="MS-Terminator B760M",version="VER:H3.7G" -smbios type=2,manufacturer="Maxsun",product="MS-Terminator B760M",version="VER:H3.7G" -smbios type=3,manufacturer="Default string",version="Default string" -smbios type=17,manufacturer=Kingston,part=KF432C16BB/16,serial=K4D4001001,asset=DIMM-A1,loc_pfx=DIMM,bank=ChannelA,speed=3200 -smbios type=4,manufacturer="Intel(R) Corporation",version="__CPUMODEL__"'
 
-# Empty: leave the VM hardware settings unchanged.
-CFG_VM_SET="--machine q35 --bios ovmf --vga vmware --localtime 1 --tablet 1"
+# Complete connector and slot instances keep WMI CIM classes populated.
+port_types=(0x10 0x10 0x10 0x10 0x1D 0x1D 0x1F 0x1F 0x1C 0x1C 0x20 0x20)
+port_connectors=(0x12 0x12 0x12 0x12 0x1F 0x1F 0x0B 0x0B 0x07 0x07 0x22 0x22)
+port_names=(USB1 USB2 USB3 USB4 AUDIO1 AUDIO2 LAN1 LAN2 VIDEO1 VIDEO2 SATA1 SATA2)
+for i in "${!port_types[@]}"; do
+  CFG_ARGS_TEMPLATE+=" -smbios type=8,internal_reference=J$((i+1)),external_reference=${port_names[$i]},connector_type=${port_connectors[$i]},port_type=${port_types[$i]}"
+done
+slot_types=(0xAA 0xA9 0xA9 0xA8 0xA8 0xA8 0xA6 0xA6 0xA6 0xA6 0xA6 0xA6)
+for i in "${!slot_types[@]}"; do
+  CFG_ARGS_TEMPLATE+=" -smbios type=9,slot_designation=SLOT$((i+1)),slot_type=${slot_types[$i]},slot_length=2,current_usage=3"
+done
+
+CFG_VM_SET="--machine q35 --bios ovmf --vga std --localtime 1 --tablet 1"
 ############################# /CONFIG #########################################
 
 set -uo pipefail
@@ -143,11 +154,92 @@ cpu_model(){ grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | sed 's/^ *//'; 
 mod_is_ours(){ modinfo kvm 2>/dev/null | grep -q '^realpc:'; }
 
 STATE="$WORKDIR/.realpc-state"
+PVE_QEMU_DIR="${REALPC_PVE_QEMU_DIR:-/etc/pve/qemu-server}"
+HOST_TOOLS_ARGS_D="${REALPC_HOST_TOOLS_ARGS_D:-/etc/pve-host-tools/args.d}"
+HOST_TOOLS_LOCK="${REALPC_HOST_TOOLS_LOCK:-/run/lock/pve-host-tools.lock}"
+HOST_TOOLS_LOCK_TIMEOUT="${REALPC_HOST_TOOLS_LOCK_TIMEOUT:-60}"
+HOST_TOOLS_LOCK_FD=""
 st_set(){ mkdir -p "$WORKDIR" || die "Cannot create $WORKDIR"
           grep -v "^$1=" "$STATE" 2>/dev/null >"$STATE.tmp" || true
           echo "$1=$2" >>"$STATE.tmp" || die "Cannot write $STATE.tmp"
           mv "$STATE.tmp" "$STATE" || die "Cannot update $STATE"; dbg "state $1=$2"; }
 st_get(){ [[ -f "$STATE" ]] && sed -n "s/^$1=//p" "$STATE" | tail -1; }
+
+acquire_host_tools_lock(){
+  command -v flock >/dev/null || die "flock is required for host-tools coordination"
+  mkdir -p "$(dirname "$HOST_TOOLS_LOCK")" || die "Cannot create the host-tools lock directory"
+  exec {HOST_TOOLS_LOCK_FD}>"$HOST_TOOLS_LOCK" \
+    || die "Cannot open host-tools lock: $HOST_TOOLS_LOCK"
+  flock -w "$HOST_TOOLS_LOCK_TIMEOUT" "$HOST_TOOLS_LOCK_FD" \
+    || die "Timed out after ${HOST_TOOLS_LOCK_TIMEOUT}s waiting for $HOST_TOOLS_LOCK"
+}
+
+args_fragments(){
+  local id=$1 dir="$HOST_TOOLS_ARGS_D/$1" f fragment
+  [[ -d "$dir" ]] || return 0
+  while IFS= read -r -d '' f; do
+    fragment="$(cat "$f")" || die "Cannot read host-tools fragment $f"
+    [[ "$fragment" != *$'\n'* && "$fragment" != *$'\r'* ]] \
+      || die "Host-tools fragment must contain exactly one args line: $f"
+    [[ -n "${fragment// }" ]] && printf ' %s' "$fragment"
+  done < <(find "$dir" -maxdepth 1 -type f -name '*.args' -print0 | sort -z)
+}
+
+restore_vm_owned_keys(){
+  local backup=$1 current=$2 id=$3
+  python3 - "$backup" "$current" "$HOST_TOOLS_ARGS_D/$id" <<'PY'
+import os
+import pathlib
+import re
+import sys
+
+backup_path, current_path, fragment_dir = map(pathlib.Path, sys.argv[1:])
+backup = backup_path.read_text()
+current = current_path.read_text()
+
+def main_lines(text):
+    lines = text.splitlines(keepends=True)
+    end = next((i for i, line in enumerate(lines) if line.startswith("[")), len(lines))
+    return lines[:end], lines[end:]
+
+def get(main, key):
+    prefix = key + ":"
+    return next((line.rstrip("\r\n")[len(prefix):].strip()
+                 for line in main if line.startswith(prefix)), None)
+
+def put(main, key, value):
+    prefix = key + ":"
+    main[:] = [line for line in main if not line.startswith(prefix)]
+    if value is not None:
+        main.append(f"{key}: {value}\n")
+
+backup_main, _ = main_lines(backup)
+current_main, snapshots = main_lines(current)
+igd = any(re.match(r"hostpci\d+:", line) and "00:02.0" in line
+          for line in current_main)
+base = get(backup_main, "args") or ""
+base = re.sub(r"(?:^|\s)-set\s+device\.hostpci\d+\."
+              r"(?:addr|bus|x-igd-[^\s]+)", "", base).strip()
+fragments = []
+if fragment_dir.is_dir():
+    for path in sorted(fragment_dir.glob("*.args"), key=lambda p: p.name):
+        value = path.read_text().strip()
+        if value:
+            fragments.append(value)
+args = " ".join([part for part in [base, *fragments] if part])
+put(current_main, "args", args or None)
+for key in ("machine", "bios", "localtime", "tablet"):
+    put(current_main, key, get(backup_main, key))
+if not igd:
+    put(current_main, "vga", get(backup_main, "vga"))
+result = "".join(current_main + snapshots)
+tmp = current_path.with_name(current_path.name + ".realpc-tmp")
+tmp.write_text(result)
+os.chmod(tmp, current_path.stat().st_mode)
+os.replace(tmp, current_path)
+PY
+}
+
 
 package_database_healthy(){
   local output
@@ -238,7 +330,15 @@ rollback(){
   for id in $ids; do
     cb="$(st_get "CONF_BAK_$id")"; cf="$(st_get "CONF_PATH_$id")"
     if [[ -n "$cb" && -f "$cb" && -n "$cf" ]]; then
-      cp -f "$cb" "$cf" && ok "Restored VM $id config" || { err "Could not restore $cf"; failed=1; }
+      local recorded_sha current_sha
+      recorded_sha="$(st_get "CONF_SHA_$id")"
+      current_sha="$(sha256sum "$cf" 2>/dev/null | awk '{print $1}')"
+      if [[ "$auto" == 1 || -z "$recorded_sha" || "$recorded_sha" == "$current_sha" ]]; then
+        cp -f "$cb" "$cf" && ok "Restored VM $id config"           || { err "Could not restore $cf"; failed=1; }
+      else
+        restore_vm_owned_keys "$cb" "$cf" "$id"           && ok "Restored only realpc-owned keys for VM $id; other tool changes preserved"           || { err "Could not restore realpc-owned keys in $cf"; failed=1; }
+      fi
+      [[ "$failed" == 0 ]] && st_set "CONF_SHA_$id" ""
     fi
   done
   # Compatibility with old installer state, for explicit manual rollback only.
@@ -422,8 +522,10 @@ package_backup_matches(){
 }
 
 find_verified_package_backup(){
-  local pkg=$1 version=$2 old_commit candidate rc
+  local pkg=$1 version=$2 old_commit journal_backup candidate rc
   local candidates=()
+  journal_backup="$(st_get "OLD_${pkg}_DEB")"
+  [[ -n "$journal_backup" ]] && candidates+=("$journal_backup")
   old_commit="$(st_get SOURCE_COMMIT)"
   [[ -n "$old_commit" ]] \
     && candidates+=("$WORKDIR/.backup/installed/$old_commit/${pkg}_"*.deb)
@@ -524,8 +626,8 @@ record_install_state(){
   # Commit the four related fields with one rename. A write failure cannot leave
   # a new release tag next to an old mode/kernel record after rollback.
   {
-    grep -v -E '^(INSTALL_MODE|RELEASE_TAG|SOURCE_COMMIT|KERNEL_RELEASE)=' "$STATE" 2>/dev/null || true
-    printf 'INSTALL_MODE=%s\nRELEASE_TAG=%s\nSOURCE_COMMIT=%s\nKERNEL_RELEASE=%s\n' \
+    grep -v -E '^(INSTALL_MODE|RELEASE_TAG|SOURCE_COMMIT|KERNEL_RELEASE|CONTRACT_VERSION)=' "$STATE" 2>/dev/null || true
+    printf 'INSTALL_MODE=%s\nRELEASE_TAG=%s\nSOURCE_COMMIT=%s\nKERNEL_RELEASE=%s\nCONTRACT_VERSION=1\n' \
       "$mode" "$RESOLVED_TAG" "$RESOLVED_COMMIT" "$kernel"
   } >"$STATE.tmp" || die "Cannot write $STATE.tmp"
   mv "$STATE.tmp" "$STATE" || die "Cannot update $STATE"
@@ -577,7 +679,7 @@ build_install_module(){
   info "Building the module; this can take several minutes and requires matching kernel sources..."
   KSRC="${KSRC:-}" bash "$WORKDIR/kernel/build-kvm.sh" \
     || die "kvm.ko build failed (see above; deb-src or --ksrc PATH may be required)"
-  local rel built; rel="$(uname -r)"; built="$WORKDIR/kernel/out/kvm.ko-$rel"
+  local rel built; rel="$(uname -r)"; built="$WORKDIR/kernel/out/kvm.ko"
   [[ -f "$built" ]] || die "Built module not found: $built"
   modinfo "$built" 2>/dev/null | grep -q '^realpc:' \
     || die "Built module has no realpc marker; refusing installation"
@@ -684,12 +786,12 @@ update_install(){ need_root
 # CONFIGVM: a separate explicit operation; update never calls this function.
 configvm(){ need_root
   [[ -n "$VMID" ]] || die "Specify --vmid N"
-  local conf="/etc/pve/qemu-server/${VMID}.conf"; [[ -f "$conf" ]] || die "Missing $conf (create the VM first)"
+  local conf="$PVE_QEMU_DIR/${VMID}.conf"; [[ -f "$conf" ]] || die "Missing $conf (create the VM first)"
   local a
   for a in "${CFG_AML[@]}"; do [[ -f "$WORKDIR/$a" ]] || die "Missing $WORKDIR/$a; run normal/strong/update first"; done
   verify_assets "$WORKDIR" "${CFG_AML[@]}" || die "ACPI files failed SHA-256 verification"
   if grep -q '^args:' "$conf" && [[ "$YES" != 1 ]]; then
-    confirm "The existing args line will be COMPLETELY replaced. Continue?" || { info "Canceled"; return 0; }
+    confirm "Rebuild the main args line and preserve host-tools fragments?" || { info "Canceled"; return 0; }
   fi
   transaction_begin; TRANSACTION_VMID="$VMID"
   mkdir -p "$WORKDIR/.bak" || die "Cannot create the backup directory"
@@ -702,17 +804,32 @@ configvm(){ need_root
   local args="${CFG_ARGS_TEMPLATE//__AML__/$WORKDIR}"; args="${args//__CPUMODEL__/$model}"
   if [[ "$(cpu_vendor)" != intel ]]; then
     args="${args//,host-sensors=on/}"
-    info "host-sensors disabled: it is supported only on Intel hosts"
+    info "host-sensors MSR access disabled: it is supported only on Intel hosts"
   fi
-  sed '/^args:/d' "$conf" >"$conf.tmp" || die "Could not prepare $conf"
-  echo "args: $args" >>"$conf.tmp" || die "Could not write $conf.tmp"
-  mv "$conf.tmp" "$conf" || die "Could not write $conf"
-  ok "Updated args for VM $VMID (CPU: $model)"
-  if [[ -n "${CFG_VM_SET// }" ]]; then
-    info "qm set $VMID $CFG_VM_SET"; qm set "$VMID" $CFG_VM_SET >/dev/null \
+  args+="$(args_fragments "$VMID")"
+  qm set "$VMID" --args "$args" >/dev/null \
+    || die "qm set --args failed; the VM configuration will be restored"
+  ok "Updated main args for VM $VMID (CPU: $model); fragments preserved"
+
+  local -a vm_set filtered=()
+  read -r -a vm_set <<< "$CFG_VM_SET"
+  local skip=0 token
+  if awk '/^\[/{exit} /^hostpci[0-9]+:.*00:02\.0/{found=1} END{exit !found}' "$conf"; then
+    for token in "${vm_set[@]}"; do
+      if (( skip )); then skip=0; continue; fi
+      if [[ "$token" == --vga ]]; then skip=1; continue; fi
+      filtered+=("$token")
+    done
+    info "Full IGD passthrough detected: preserving vga and hostpci settings"
+  else
+    filtered=("${vm_set[@]}")
+  fi
+  if (( ${#filtered[@]} )); then
+    info "qm set $VMID ${filtered[*]}"; qm set "$VMID" "${filtered[@]}" >/dev/null \
       || die "qm set failed; the VM configuration will be restored"
-    ok "VM hardware: $CFG_VM_SET"
   fi
+  st_set CONTRACT_VERSION 1
+  st_set "CONF_SHA_$VMID" "$(sha256sum "$conf" | awk '{print $1}')"
   info "The cluster-wide MAC prefix is not changed; set MAC addresses in each VM net device."
   ok "Done. Start the VM and check sensors with HWiNFO/AIDA64."
   transaction_end
@@ -723,11 +840,17 @@ configvm(){ need_root
 
 do_check; echo
 case "$MODE" in
-  check)    : ;;
-  normal)   install_normal ;;
-  strong)   install_strong ;;
-  update)   update_install ;;
-  configvm) configvm ;;
-  rollback) need_root; rollback ;;
+  check) : ;;
+  normal|strong|update|configvm|rollback)
+    need_root
+    acquire_host_tools_lock
+    case "$MODE" in
+      normal) install_normal ;;
+      strong) install_strong ;;
+      update) update_install ;;
+      configvm) configvm ;;
+      rollback) rollback ;;
+    esac
+    ;;
   *) die "Mode must be check, normal, strong, update, configvm or rollback" ;;
 esac

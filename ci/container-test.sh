@@ -24,12 +24,20 @@ echo "=== artifacts"; ls -la out; (cd out && for f in SHA256SUMS*; do sha256sum 
 apt-get install -y --no-install-recommends ./out/pve-qemu-kvm_*_amd64.deb ./out/pve-edk2-firmware-ovmf_*_all.deb
 dpkg -l pve-qemu-kvm pve-edk2-firmware-ovmf | tail -2
 qemu-system-x86_64 --version
+qemu-system-x86_64 -device help | grep -F 'host-sensors'
 
 echo "=== fw_cfg dump (qtest, no guest code)"
+REALPC_SETUP_SOURCE_ONLY=1 source deploy/realpc-setup.sh
+vm_args_text="${CFG_ARGS_TEMPLATE//__AML__/$(pwd)/out}"
+vm_args_text="${vm_args_text//__CPUMODEL__/Test CPU}"
+vm_args_text="${vm_args_text/-cpu host,/-cpu max,}"
+eval "vm_args=($vm_args_text)"
 python3 -I tests/fwcfg_dump.py /tmp/fw -- qemu-system-x86_64 -accel qtest -machine q35 -m 4096 -smp 8 \
-  -display none -nodefaults -qtest stdio \
-  -acpitable file=out/ssdt.aml -acpitable file=out/ssdt-ec.aml -acpitable file=out/hpet.aml \
-  -smbios type=1,manufacturer=Maxsun,product=Test -smbios type=9 -smbios type=8
+  -display none -nodefaults -qtest stdio "${vm_args[@]}"
+
+echo "=== host sensor I/O registers"
+python3 -I tests/qtest_sensors.py -- qemu-system-x86_64 -accel qtest -machine q35 -m 1024 \
+  -display none -nodefaults -qtest stdio -device host-sensors
 
 echo "=== OVMF extract"
 pip install --break-system-packages -q uefi_firmware

@@ -62,12 +62,12 @@ jobs:
           ovmf=(dist/pve-edk2-firmware-ovmf_*_all.deb)
           [ "${#qemu[@]}" -eq 1 ] || { echo "Expected exactly one QEMU amd64 package" >&2; exit 1; }
           [ "${#ovmf[@]}" -eq 1 ] || { echo "Expected exactly one OVMF package" >&2; exit 1; }
-          for file in ssdt.aml ssdt-ec.aml hpet.aml qemu-applied.diff edk2-applied.diff seabios-applied.diff; do
+          for file in ssdt.aml ssdt-ec.aml hpet.aml wsmt.aml qemu-applied.diff edk2-applied.diff seabios-applied.diff; do
             [ -s "dist/$file" ] || { echo "Missing or empty required artifact: $file" >&2; exit 1; }
           done
           mkdir -p rel
           cp "${qemu[@]}" "${ovmf[@]}" rel/
-          cp dist/ssdt.aml dist/ssdt-ec.aml dist/hpet.aml dist/*-applied.diff rel/
+          cp dist/ssdt.aml dist/ssdt-ec.aml dist/hpet.aml dist/wsmt.aml dist/*-applied.diff rel/
           # The installer and kernel tools come from the exact same commit as the artifacts.
           tar -C kernel --exclude='./out' --exclude='./__pycache__' -czf rel/realpc-kernel-tools.tar.gz .
           cp deploy/realpc-setup.sh deploy/install-userspace.sh rel/

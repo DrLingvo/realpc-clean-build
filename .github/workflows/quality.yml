@@ -41,7 +41,8 @@ jobs:
       - name: Verify recipe hash coverage
         run: |
           tools/source-hash.sh > /tmp/realpc-source-hash.txt
-          for input in tools/make-logo.py ci/container-build.sh .github/workflows/build.yml; do
+          for input in tools/make-logo.py ci/container-build.sh qemu/host-sensors-device.c \
+            acpi/build-wsmt.py .github/workflows/build.yml; do
             grep -F "  $input" /tmp/realpc-source-hash.txt >/dev/null || {
               echo "$input is missing from the recipe hash" >&2; exit 1;
             }

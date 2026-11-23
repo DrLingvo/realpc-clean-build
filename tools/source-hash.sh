@@ -7,7 +7,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 files=$(git ls-files 2>/dev/null | grep -E \
-  '^(config\.env|build\.sh|qemu/.*\.(patch|sh)|edk2/.*\.(patch|sh)|seabios/.*\.patch|acpi/.*\.(dsl|sh)|kernel/.*\.(py|sh)|ci/container-build\.sh|tools/make-logo\.py|\.github/workflows/build\.yml)$' \
+  '^(config\.env|build\.sh|qemu/.*\.(patch|sh|c)|edk2/.*\.(patch|sh)|seabios/.*\.patch|acpi/.*\.(dsl|sh|py)|kernel/.*\.(py|sh)|ci/container-build\.sh|tools/make-logo\.py|\.github/workflows/build\.yml)$' \
   | sort || true)
 [ -n "$files" ] || { echo "run inside the git repo" >&2; exit 1; }
 

@@ -1,701 +1,132 @@
-/*
- * Intel ACPI Component Architecture
- * AML/ASL+ Disassembler version 20230628 (64-bit version)
- * Copyright (c) 2000 - 2023 Intel Corporation
- * 
- * Disassembling to symbolic ASL+ operators
- *
- * Disassembly of ssdt.aml, Fri Nov 20 15:58:50 2026
- *
- * Original Table Header:
- *     Signature        "SSDT"
- *     Length           0x0000081F (2079)
- *     Revision         0x02
- *     Checksum         0x4B
- *     OEM ID           "INTEL"
- *     OEM Table ID     "Ther_Rvp"
- *     OEM Revision     0x00000001 (1)
- *     Compiler ID      "INTL"
- *     Compiler Version 0x20210930 (539035952)
- */
-DefinitionBlock ("", "SSDT", 2, "INTEL", "Ther_Rvp", 0x00000001)
+DefinitionBlock ("", "SSDT", 2, "INTEL", "HWMON", 0x00000001)
 {
-    External (_SB_.PCI0, DeviceObj)
-
-    Scope (_SB.PCI0)
+    Scope (\_SB)
     {
-        Device (TIMR)
+        Device (HSEN)
         {
-            Name (_HID, "PNP0100" /* PC-class System Timer */)  // _HID: Hardware ID
-            Method (_STA, 0, NotSerialized)  // _STA: Status
+            Name (_HID, EisaId ("PNP0C02"))
+            Name (_UID, "HWMON")
+            Name (_STA, 0x0F)
+            Name (_CRS, ResourceTemplate ()
             {
-                Return (0x0F)
-            }
-
-            Name (_CRS, Buffer (0x02)  // _CRS: Current Resource Settings
-            {
-                 0x79, 0x00                                       // y.
+                IO (Decode16, 0x0610, 0x0610, 0x01, 0x20)
             })
+            OperationRegion (HSIO, SystemIO, 0x0610, 0x20)
+            Field (HSIO, DWordAcc, NoLock, Preserve)
+            {
+                TPCK,   32,
+                TPCR,   32,
+                FAN0,   32,
+                FAN1,   32,
+                FAN2,   32,
+                FAN3,   32,
+                VOLT,   32,
+                STAT,   32
+            }
+        }
+
+        Device (PWRB)
+        {
+            Name (_HID, EisaId ("PNP0C0C"))
+            Name (_UID, "PWRB")
+            Name (_STA, 0x0B)
+        }
+
+        Device (SLPB)
+        {
+            Name (_HID, EisaId ("PNP0C0E"))
+            Name (_UID, "SLPB")
+            Name (_STA, 0x0B)
+        }
+
+        Device (PIC0)
+        {
+            Name (_HID, EisaId ("PNP0000"))
+            Name (_UID, "PIC0")
+            Name (_STA, 0x0F)
+        }
+
+        Device (WMI0)
+        {
+            Name (_HID, EisaId ("PNP0C14"))
+            Name (_UID, "WMI0")
+            Name (_STA, 0x0F)
+        }
+
+        Device (WINB)
+        {
+            Name (_HID, EisaId ("PNP0D80"))
+            Name (_UID, "WINB")
+            Name (_STA, 0x0F)
         }
     }
 
     Scope (\_TZ)
     {
-        PowerResource (FN00, 0x00, 0x0000)
-        {
-            Method (_STA, 0, Serialized)  // _STA: Status
-            {
-                Local1 = 0x0F
-                Return (Local1)
-            }
-
-            Method (_ON, 0, Serialized)  // _ON_: Power On
-            {
-            }
-
-            Method (_OFF, 0, Serialized)  // _OFF: Power Off
-            {
-            }
-        }
-
         Device (FAN0)
         {
-            Name (_HID, EisaId ("PNP0C0B") /* Fan (Thermal Solution) */)  // _HID: Hardware ID
-            Name (_UID, Zero)  // _UID: Unique ID
-            Name (_CID, "CPU FAN")  // _CID: Compatible ID
-            Name (_PR0, Package (0x01)  // _PR0: Power Resources for D0
+            Name (_HID, EisaId ("PNP0C0B"))
+            Name (_UID, "CPU-FAN")
+            Name (_FIF, Package (0x04) { Zero, 0x32, 0x02, Zero })
+            Method (_FST, 0, NotSerialized)
             {
-                FN00
-            })
-            Method (_FIF, 0, NotSerialized)  // _FIF: Fan Information
-            {
-                Return (Package (0x04)
-                {
-                    Zero, 
-                    0x0A, 
-                    0x08, 
-                    0x80
-                })
-            }
-
-            Method (_FST, 0, NotSerialized)  // _FST: Fan Status
-            {
-                Return (Package (0x03)
-                {
-                    Zero, 
-                    0x32, 
-                    0x00013880
-                })
-            }
-        }
-
-        PowerResource (FN01, 0x00, 0x0000)
-        {
-            Method (_STA, 0, Serialized)  // _STA: Status
-            {
-                Local1 = 0x0F
+                Local0 = \_SB.HSEN.FAN0
+                If (Local0 == 0xFFFFFFFF) { Local0 = Zero }
+                Local1 = Package (0x03) { Zero, 0x32, Zero }
+                Local1 [0x02] = Local0
                 Return (Local1)
-            }
-
-            Method (_ON, 0, Serialized)  // _ON_: Power On
-            {
-            }
-
-            Method (_OFF, 0, Serialized)  // _OFF: Power Off
-            {
             }
         }
 
         Device (FAN1)
         {
-            Name (_HID, EisaId ("PNP0C0B") /* Fan (Thermal Solution) */)  // _HID: Hardware ID
-            Name (_UID, One)  // _UID: Unique ID
-            Name (_CID, "aicodoFAN-1")  // _CID: Compatible ID
-            Name (_PR0, Package (0x01)  // _PR0: Power Resources for D0
+            Name (_HID, EisaId ("PNP0C0B"))
+            Name (_UID, "SYS-FAN")
+            Name (_FIF, Package (0x04) { Zero, 0x32, 0x02, Zero })
+            Method (_FST, 0, NotSerialized)
             {
-                FN01
-            })
-            Method (_FIF, 0, NotSerialized)  // _FIF: Fan Information
-            {
-                Return (Package (0x04)
-                {
-                    Zero, 
-                    0x0A, 
-                    0x08, 
-                    0x80
-                })
-            }
-
-            Method (_FST, 0, NotSerialized)  // _FST: Fan Status
-            {
-                Return (Package (0x03)
-                {
-                    Zero, 
-                    0x32, 
-                    0x00013880
-                })
-            }
-        }
-
-        PowerResource (FN02, 0x00, 0x0000)
-        {
-            Method (_STA, 0, Serialized)  // _STA: Status
-            {
-                Local1 = 0x0F
+                Local0 = \_SB.HSEN.FAN1
+                If (Local0 == 0xFFFFFFFF) { Local0 = Zero }
+                Local1 = Package (0x03) { Zero, 0x32, Zero }
+                Local1 [0x02] = Local0
                 Return (Local1)
-            }
-
-            Method (_ON, 0, Serialized)  // _ON_: Power On
-            {
-            }
-
-            Method (_OFF, 0, Serialized)  // _OFF: Power Off
-            {
-            }
-        }
-
-        Device (FAN2)
-        {
-            Name (_HID, EisaId ("PNP0C0B") /* Fan (Thermal Solution) */)  // _HID: Hardware ID
-            Name (_UID, 0x02)  // _UID: Unique ID
-            Name (_CID, "aicodoFAN-2")  // _CID: Compatible ID
-            Name (_PR0, Package (0x01)  // _PR0: Power Resources for D0
-            {
-                FN02
-            })
-            Method (_FIF, 0, NotSerialized)  // _FIF: Fan Information
-            {
-                Return (Package (0x04)
-                {
-                    Zero, 
-                    0x0A, 
-                    0x08, 
-                    0x80
-                })
-            }
-
-            Method (_FST, 0, NotSerialized)  // _FST: Fan Status
-            {
-                Return (Package (0x03)
-                {
-                    Zero, 
-                    0x32, 
-                    0x00013880
-                })
-            }
-        }
-
-        PowerResource (FN03, 0x00, 0x0000)
-        {
-            Method (_STA, 0, Serialized)  // _STA: Status
-            {
-                Local1 = 0x0F
-                Return (Local1)
-            }
-
-            Method (_ON, 0, Serialized)  // _ON_: Power On
-            {
-            }
-
-            Method (_OFF, 0, Serialized)  // _OFF: Power Off
-            {
-            }
-        }
-
-        Device (FAN3)
-        {
-            Name (_HID, EisaId ("PNP0C0B") /* Fan (Thermal Solution) */)  // _HID: Hardware ID
-            Name (_UID, 0x03)  // _UID: Unique ID
-            Name (_CID, "aicodoFAN-3")  // _CID: Compatible ID
-            Name (_PR0, Package (0x01)  // _PR0: Power Resources for D0
-            {
-                FN03
-            })
-            Method (_FIF, 0, NotSerialized)  // _FIF: Fan Information
-            {
-                Return (Package (0x04)
-                {
-                    Zero, 
-                    0x0A, 
-                    0x08, 
-                    0x80
-                })
-            }
-
-            Method (_FST, 0, NotSerialized)  // _FST: Fan Status
-            {
-                Return (Package (0x03)
-                {
-                    Zero, 
-                    0x32, 
-                    0x00013880
-                })
-            }
-        }
-
-        PowerResource (FN04, 0x00, 0x0000)
-        {
-            Method (_STA, 0, Serialized)  // _STA: Status
-            {
-                Local1 = 0x0F
-                Return (Local1)
-            }
-
-            Method (_ON, 0, Serialized)  // _ON_: Power On
-            {
-            }
-
-            Method (_OFF, 0, Serialized)  // _OFF: Power Off
-            {
-            }
-        }
-
-        Device (FAN4)
-        {
-            Name (_HID, EisaId ("PNP0C0B") /* Fan (Thermal Solution) */)  // _HID: Hardware ID
-            Name (_UID, 0x04)  // _UID: Unique ID
-            Name (_CID, "aicodoFAN-4")  // _CID: Compatible ID
-            Name (_PR0, Package (0x01)  // _PR0: Power Resources for D0
-            {
-                FN04
-            })
-            Method (_FIF, 0, NotSerialized)  // _FIF: Fan Information
-            {
-                Return (Package (0x04)
-                {
-                    Zero, 
-                    0x0A, 
-                    0x08, 
-                    0x80
-                })
-            }
-
-            Method (_FST, 0, NotSerialized)  // _FST: Fan Status
-            {
-                Return (Package (0x03)
-                {
-                    Zero, 
-                    0x32, 
-                    0x00013880
-                })
-            }
-        }
-
-        PowerResource (FN05, 0x00, 0x0000)
-        {
-            Method (_STA, 0, Serialized)  // _STA: Status
-            {
-                Local1 = 0x0F
-                Return (Local1)
-            }
-
-            Method (_ON, 0, Serialized)  // _ON_: Power On
-            {
-            }
-
-            Method (_OFF, 0, Serialized)  // _OFF: Power Off
-            {
-            }
-        }
-
-        Device (FAN5)
-        {
-            Name (_HID, EisaId ("PNP0C0B") /* Fan (Thermal Solution) */)  // _HID: Hardware ID
-            Name (_UID, 0x05)  // _UID: Unique ID
-            Name (_CID, "aicodoFAN-5")  // _CID: Compatible ID
-            Name (_PR0, Package (0x01)  // _PR0: Power Resources for D0
-            {
-                FN05
-            })
-            Method (_FIF, 0, NotSerialized)  // _FIF: Fan Information
-            {
-                Return (Package (0x04)
-                {
-                    Zero, 
-                    0x0A, 
-                    0x08, 
-                    0x80
-                })
-            }
-
-            Method (_FST, 0, NotSerialized)  // _FST: Fan Status
-            {
-                Return (Package (0x03)
-                {
-                    Zero, 
-                    0x32, 
-                    0x00013880
-                })
             }
         }
 
         ThermalZone (TZ00)
         {
-            Method (_TMP, 0, NotSerialized)  // _TMP: Temperature
+            Method (_TMP, 0, NotSerialized)
             {
-                Return (0x0CE4)
+                Local0 = \_SB.HSEN.TPCK
+                If (Local0 == 0xFFFFFFFF) { Return (0x0FF6) }
+                Return (Local0)
             }
-
-            Method (_MTL, 0, NotSerialized)  // _MTL: Minimum Throttle Limit
-            {
-                Return (0x64)
-            }
-
-            Method (_AC0, 0, NotSerialized)  // _ACx: Active Cooling, x=0-9
-            {
-                Return (0x0EA6)
-            }
-
-            Name (_AL0, Package (0x01)  // _ALx: Active List, x=0-9
-            {
-                FAN0
-            })
-            Name (_AL1, Package (0x01)  // _ALx: Active List, x=0-9
-            {
-                FAN1
-            })
-            Name (_AL2, Package (0x01)  // _ALx: Active List, x=0-9
-            {
-                FAN2
-            })
-            Name (_AL3, Package (0x01)  // _ALx: Active List, x=0-9
-            {
-                FAN3
-            })
-            Name (_AL4, Package (0x01)  // _ALx: Active List, x=0-9
-            {
-                FAN4
-            })
-            Name (_AL5, Package (0x01)  // _ALx: Active List, x=0-9
-            {
-                FAN5
-            })
-            Method (_PSV, 0, NotSerialized)  // _PSV: Passive Temperature
-            {
-                Return (0x0BB8)
-            }
-
-            Method (_HOT, 0, NotSerialized)  // _HOT: Hot Temperature
-            {
-                Return (0x0EA6)
-            }
-
-            Method (_CRT, 0, NotSerialized)  // _CRT: Critical Temperature
-            {
-                Return (0x0EA6)
-            }
-
-            Method (_SCP, 1, NotSerialized)  // _SCP: Set Cooling Policy
-            {
-            }
-
-            Name (_TC1, 0x04)  // _TC1: Thermal Constant 1
-            Name (_TC2, 0x03)  // _TC2: Thermal Constant 2
-            Name (_TSP, 0x96)  // _TSP: Thermal Sampling Period
-            Name (_TZP, Zero)  // _TZP: Thermal Zone Polling
-            Name (_STR, Unicode ("System thermal zone"))  // _STR: Description String
+            Method (_PSV, 0, NotSerialized) { Return (0x1058) }
+            Method (_HOT, 0, NotSerialized) { Return (0x106C) }
+            Method (_CRT, 0, NotSerialized) { Return (0x1076) }
+            Method (_TC1, 0, NotSerialized) { Return (0x02) }
+            Method (_TC2, 0, NotSerialized) { Return (0x05) }
+            Method (_TSP, 0, NotSerialized) { Return (0x0A) }
+            Method (_TZP, 0, NotSerialized) { Return (0x012C) }
+            Name (_AL0, Package (0x01) { FAN0 })
         }
 
         ThermalZone (TZ01)
         {
-            Method (_TMP, 0, NotSerialized)  // _TMP: Temperature
+            Method (_TMP, 0, NotSerialized)
             {
-                Return (0x0D84)
+                Local0 = \_SB.HSEN.TPCR
+                If (Local0 == 0xFFFFFFFF) { Return (0x0FF6) }
+                Return (Local0)
             }
-
-            Method (_MTL, 0, NotSerialized)  // _MTL: Minimum Throttle Limit
-            {
-                Return (0x64)
-            }
-
-            Method (_AC0, 0, NotSerialized)  // _ACx: Active Cooling, x=0-9
-            {
-                Return (0x0EA6)
-            }
-
-            Method (_PSV, 0, NotSerialized)  // _PSV: Passive Temperature
-            {
-                Return (0x0BB8)
-            }
-
-            Method (_HOT, 0, NotSerialized)  // _HOT: Hot Temperature
-            {
-                Return (0x0EA6)
-            }
-
-            Method (_CRT, 0, NotSerialized)  // _CRT: Critical Temperature
-            {
-                Return (0x0EA6)
-            }
-
-            Method (_SCP, 1, NotSerialized)  // _SCP: Set Cooling Policy
-            {
-            }
-
-            Name (_TC1, 0x04)  // _TC1: Thermal Constant 1
-            Name (_TC2, 0x03)  // _TC2: Thermal Constant 2
-            Name (_TSP, 0x96)  // _TSP: Thermal Sampling Period
-            Name (_TZP, Zero)  // _TZP: Thermal Zone Polling
-            Name (_STR, Unicode ("LM78A"))  // _STR: Description String
-        }
-
-        ThermalZone (TZ02)
-        {
-            Method (_TMP, 0, NotSerialized)  // _TMP: Temperature
-            {
-                Return (0x0C2C)
-            }
-
-            Method (_MTL, 0, NotSerialized)  // _MTL: Minimum Throttle Limit
-            {
-                Return (0x64)
-            }
-
-            Method (_AC0, 0, NotSerialized)  // _ACx: Active Cooling, x=0-9
-            {
-                Return (0x0EA6)
-            }
-
-            Method (_PSV, 0, NotSerialized)  // _PSV: Passive Temperature
-            {
-                Return (0x0BB8)
-            }
-
-            Method (_HOT, 0, NotSerialized)  // _HOT: Hot Temperature
-            {
-                Return (0x0EA6)
-            }
-
-            Method (_CRT, 0, NotSerialized)  // _CRT: Critical Temperature
-            {
-                Return (0x0EA6)
-            }
-
-            Method (_SCP, 1, NotSerialized)  // _SCP: Set Cooling Policy
-            {
-            }
-
-            Name (_TC1, 0x04)  // _TC1: Thermal Constant 1
-            Name (_TC2, 0x03)  // _TC2: Thermal Constant 2
-            Name (_TSP, 0x96)  // _TSP: Thermal Sampling Period
-            Name (_TZP, Zero)  // _TZP: Thermal Zone Polling
-            Name (_STR, Unicode ("LM78A-1"))  // _STR: Description String
-        }
-
-        ThermalZone (TZ03)
-        {
-            Method (_TMP, 0, NotSerialized)  // _TMP: Temperature
-            {
-                Return (0x0C00)
-            }
-
-            Method (_MTL, 0, NotSerialized)  // _MTL: Minimum Throttle Limit
-            {
-                Return (0x64)
-            }
-
-            Method (_AC0, 0, NotSerialized)  // _ACx: Active Cooling, x=0-9
-            {
-                Return (0x0EA6)
-            }
-
-            Method (_PSV, 0, NotSerialized)  // _PSV: Passive Temperature
-            {
-                Return (0x0BB8)
-            }
-
-            Method (_HOT, 0, NotSerialized)  // _HOT: Hot Temperature
-            {
-                Return (0x0EA6)
-            }
-
-            Method (_CRT, 0, NotSerialized)  // _CRT: Critical Temperature
-            {
-                Return (0x0EA6)
-            }
-
-            Method (_SCP, 1, NotSerialized)  // _SCP: Set Cooling Policy
-            {
-            }
-
-            Name (_TC1, 0x04)  // _TC1: Thermal Constant 1
-            Name (_TC2, 0x03)  // _TC2: Thermal Constant 2
-            Name (_TSP, 0x96)  // _TSP: Thermal Sampling Period
-            Name (_TZP, Zero)  // _TZP: Thermal Zone Polling
-            Name (_STR, Unicode ("aicodoTEMP-2"))  // _STR: Description String
-        }
-
-        ThermalZone (TZ04)
-        {
-            Method (_TMP, 0, NotSerialized)  // _TMP: Temperature
-            {
-                Return (0x0C0C)
-            }
-
-            Method (_MTL, 0, NotSerialized)  // _MTL: Minimum Throttle Limit
-            {
-                Return (0x64)
-            }
-
-            Method (_AC0, 0, NotSerialized)  // _ACx: Active Cooling, x=0-9
-            {
-                Return (0x0EA6)
-            }
-
-            Method (_PSV, 0, NotSerialized)  // _PSV: Passive Temperature
-            {
-                Return (0x0BB8)
-            }
-
-            Method (_HOT, 0, NotSerialized)  // _HOT: Hot Temperature
-            {
-                Return (0x0EA6)
-            }
-
-            Method (_CRT, 0, NotSerialized)  // _CRT: Critical Temperature
-            {
-                Return (0x0EA6)
-            }
-
-            Method (_SCP, 1, NotSerialized)  // _SCP: Set Cooling Policy
-            {
-            }
-
-            Name (_TC1, 0x04)  // _TC1: Thermal Constant 1
-            Name (_TC2, 0x03)  // _TC2: Thermal Constant 2
-            Name (_TSP, 0x96)  // _TSP: Thermal Sampling Period
-            Name (_TZP, Zero)  // _TZP: Thermal Zone Polling
-            Name (_STR, Unicode ("aicodoTEMP-3"))  // _STR: Description String
-        }
-
-        ThermalZone (TZ05)
-        {
-            Method (_TMP, 0, NotSerialized)  // _TMP: Temperature
-            {
-                Return (0x0C10)
-            }
-
-            Method (_MTL, 0, NotSerialized)  // _MTL: Minimum Throttle Limit
-            {
-                Return (0x64)
-            }
-
-            Method (_AC0, 0, NotSerialized)  // _ACx: Active Cooling, x=0-9
-            {
-                Return (0x0EA6)
-            }
-
-            Method (_PSV, 0, NotSerialized)  // _PSV: Passive Temperature
-            {
-                Return (0x0BB8)
-            }
-
-            Method (_HOT, 0, NotSerialized)  // _HOT: Hot Temperature
-            {
-                Return (0x0DA6)
-            }
-
-            Method (_CRT, 0, NotSerialized)  // _CRT: Critical Temperature
-            {
-                Return (0x0EA6)
-            }
-
-            Method (_SCP, 1, NotSerialized)  // _SCP: Set Cooling Policy
-            {
-            }
-
-            Name (_TC1, 0x04)  // _TC1: Thermal Constant 1
-            Name (_TC2, 0x03)  // _TC2: Thermal Constant 2
-            Name (_TSP, 0x96)  // _TSP: Thermal Sampling Period
-            Name (_TZP, Zero)  // _TZP: Thermal Zone Polling
-            Name (_STR, Unicode ("aicodoTEMP-4"))  // _STR: Description String
-        }
-
-        ThermalZone (TZ06)
-        {
-            Method (_TMP, 0, NotSerialized)  // _TMP: Temperature
-            {
-                Return (0x0C1C)
-            }
-
-            Method (_MTL, 0, NotSerialized)  // _MTL: Minimum Throttle Limit
-            {
-                Return (0x64)
-            }
-
-            Method (_AC0, 0, NotSerialized)  // _ACx: Active Cooling, x=0-9
-            {
-                Return (0x0EA6)
-            }
-
-            Method (_PSV, 0, NotSerialized)  // _PSV: Passive Temperature
-            {
-                Return (0x0BB8)
-            }
-
-            Method (_HOT, 0, NotSerialized)  // _HOT: Hot Temperature
-            {
-                Return (0x0EA6)
-            }
-
-            Method (_CRT, 0, NotSerialized)  // _CRT: Critical Temperature
-            {
-                Return (0x0EA6)
-            }
-
-            Method (_SCP, 1, NotSerialized)  // _SCP: Set Cooling Policy
-            {
-            }
-
-            Name (_TC1, 0x04)  // _TC1: Thermal Constant 1
-            Name (_TC2, 0x03)  // _TC2: Thermal Constant 2
-            Name (_TSP, 0x96)  // _TSP: Thermal Sampling Period
-            Name (_TZP, Zero)  // _TZP: Thermal Zone Polling
-            Name (_STR, Unicode ("aicodoTEMP-5"))  // _STR: Description String
-        }
-
-        ThermalZone (TZ07)
-        {
-            Method (_TMP, 0, NotSerialized)  // _TMP: Temperature
-            {
-                Return (0x0C40)
-            }
-
-            Method (_MTL, 0, NotSerialized)  // _MTL: Minimum Throttle Limit
-            {
-                Return (0x64)
-            }
-
-            Method (_AC0, 0, NotSerialized)  // _ACx: Active Cooling, x=0-9
-            {
-                Return (0x0EA6)
-            }
-
-            Method (_PSV, 0, NotSerialized)  // _PSV: Passive Temperature
-            {
-                Return (0x0BB8)
-            }
-
-            Method (_HOT, 0, NotSerialized)  // _HOT: Hot Temperature
-            {
-                Return (0x0EA6)
-            }
-
-            Method (_CRT, 0, NotSerialized)  // _CRT: Critical Temperature
-            {
-                Return (0x0EA6)
-            }
-
-            Method (_SCP, 1, NotSerialized)  // _SCP: Set Cooling Policy
-            {
-            }
-
-            Name (_TC1, 0x04)  // _TC1: Thermal Constant 1
-            Name (_TC2, 0x03)  // _TC2: Thermal Constant 2
-            Name (_TSP, 0x96)  // _TSP: Thermal Sampling Period
-            Name (_TZP, Zero)  // _TZP: Thermal Zone Polling
-            Name (_STR, Unicode ("aicodoTEMP-6"))  // _STR: Description String
+            Method (_PSV, 0, NotSerialized) { Return (0x1058) }
+            Method (_HOT, 0, NotSerialized) { Return (0x106C) }
+            Method (_CRT, 0, NotSerialized) { Return (0x1076) }
+            Method (_TC1, 0, NotSerialized) { Return (0x02) }
+            Method (_TC2, 0, NotSerialized) { Return (0x05) }
+            Method (_TSP, 0, NotSerialized) { Return (0x0A) }
+            Method (_TZP, 0, NotSerialized) { Return (0x012C) }
+            Name (_AL1, Package (0x01) { FAN1 })
         }
     }
 }
-

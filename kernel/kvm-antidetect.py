@@ -24,13 +24,16 @@ Edits the file in place. Idempotent (refuses if already patched).
 """
 import re
 import sys
+from pathlib import Path
 
 path = sys.argv[1]
 src = open(path).read()
+original_src = src
+cpuid_path = Path(path).with_name("cpuid.c")
+cpuid = cpuid_path.read_text()
+original_cpuid = cpuid
 
-if "realpc anti-detection" in src:
-    print("already patched:", path)
-    sys.exit(0)
+already_patched = "realpc anti-detection" in src
 
 
 def replace_body(text, signature, new_body, label):
@@ -64,39 +67,75 @@ def replace_body(text, signature, new_body, label):
 
 
 # 1. kvm_emulate_hypercall: keep Xen/Hyper-V paths, raise #UD for the native KVM hypercall.
-src = replace_body(
-    src,
-    "int kvm_emulate_hypercall(struct kvm_vcpu *vcpu)",
-    """\tif (kvm_xen_hypercall_enabled(vcpu->kvm))
-\t\treturn kvm_xen_hypercall(vcpu);
+if already_patched:
+    print("already patched:", path)
+else:
+    src = replace_body(
+        src,
+        "int kvm_emulate_hypercall(struct kvm_vcpu *vcpu)",
+        """\tif (kvm_xen_hypercall_enabled(vcpu->kvm))
+    \t\treturn kvm_xen_hypercall(vcpu);
 
-\tif (kvm_hv_hypercall_enabled(vcpu))
-\t\treturn kvm_hv_hypercall(vcpu);
+    \tif (kvm_hv_hypercall_enabled(vcpu))
+    \t\treturn kvm_hv_hypercall(vcpu);
 
-\t/* realpc anti-detection: no native KVM hypercall interface (bare-metal look) */
-\tkvm_queue_exception(vcpu, UD_VECTOR);
-\treturn 1;
-""",
-    "kvm_emulate_hypercall",
-)
+    \t/* realpc anti-detection: no native KVM hypercall interface (bare-metal look) */
+    \tkvm_queue_exception(vcpu, UD_VECTOR);
+    \treturn 1;
+    """,
+        "kvm_emulate_hypercall",
+    )
 
-# 2. emulator_fix_hypercall: always synthesize #UD instead of patching VMCALL<->VMMCALL.
-src = replace_body(
-    src,
-    "static int emulator_fix_hypercall(struct x86_emulate_ctxt *ctxt)",
-    """\t/* realpc anti-detection: always synthesize #UD, never patch the insn */
-\tctxt->exception.error_code_valid = false;
-\tctxt->exception.vector = UD_VECTOR;
-\tctxt->have_exception = true;
-\treturn X86EMUL_PROPAGATE_FAULT;
-""",
-    "emulator_fix_hypercall",
-)
+    # 2. emulator_fix_hypercall: always synthesize #UD instead of patching VMCALL<->VMMCALL.
+    src = replace_body(
+        src,
+        "static int emulator_fix_hypercall(struct x86_emulate_ctxt *ctxt)",
+        """\t/* realpc anti-detection: always synthesize #UD, never patch the insn */
+    \tctxt->exception.error_code_valid = false;
+    \tctxt->exception.vector = UD_VECTOR;
+    \tctxt->have_exception = true;
+    \treturn X86EMUL_PROPAGATE_FAULT;
+    """,
+        "emulator_fix_hypercall",
+    )
 
-# 3. A verifiable marker in the module metadata, so tools can confirm the running kvm.ko is
-#    this build:  modinfo kvm | grep realpc   ->   realpc: antidetect
-if "MODULE_INFO(realpc" not in src:
-    src = src.rstrip() + '\n\nMODULE_INFO(realpc, "antidetect");\n'
+    # 3. The native hypercall replacement leaves this helper unused under -Werror.
+    src = src.replace(
+        "static int complete_hypercall_exit(struct kvm_vcpu *vcpu)",
+        "static int __maybe_unused complete_hypercall_exit(struct kvm_vcpu *vcpu)",
+        1,
+    )
 
-open(path, "w").write(src)
-print("done:", path)
+    # 4. A verifiable marker in the module metadata, so tools can confirm the running kvm.ko is
+    #    this build:  modinfo kvm | grep realpc   ->   realpc: antidetect
+    if "MODULE_INFO(realpc" not in src:
+        src = src.rstrip() + '\n\nMODULE_INFO(realpc, "antidetect");\n'
+
+
+# 5. Clear the architectural hypervisor bit in leaf 1 when userspace installs the vCPU CPUID.
+# This runs during vCPU setup, not in the CPUID VM-exit path, and does not alter timing hooks.
+if "realpc_clear_hypervisor_bit" not in cpuid:
+    signature = "void kvm_vcpu_after_set_cpuid(struct kvm_vcpu *vcpu)"
+    function_pos = cpuid.find(signature)
+    if function_pos < 0:
+        raise SystemExit("Cannot find kvm_vcpu_after_set_cpuid")
+    anchor = "\tmemset(vcpu->arch.cpu_caps, 0, sizeof(vcpu->arch.cpu_caps));"
+    anchor_pos = cpuid.find(anchor, function_pos)
+    if anchor_pos < 0:
+        raise SystemExit("Cannot find kvm_vcpu_after_set_cpuid initialization anchor")
+    patch = """\t/* realpc_clear_hypervisor_bit: CPUID.1:ECX[31] is clear on bare metal. */
+\tbest = kvm_find_cpuid_entry(vcpu, 1);
+\tif (best)
+\t\tbest->ecx &= ~BIT(31);
+
+"""
+    cpuid = cpuid[:anchor_pos] + patch + cpuid[anchor_pos:]
+
+# Validate and prepare both files before writing either one. A missing anchor must not leave
+# a half-patched kernel tree that a later retry could mistake for a complete injection.
+if src != original_src:
+    open(path, "w").write(src)
+    print("done:", path)
+if cpuid != original_cpuid:
+    cpuid_path.write_text(cpuid)
+    print("done:", cpuid_path)
