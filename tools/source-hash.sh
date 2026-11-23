@@ -6,8 +6,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+mode=${1:-all}
+case "$mode" in
+  all) kernel_inputs='|kernel/.*\.(py|sh)' ;;
+  --userspace) kernel_inputs='' ;;
+  *) echo "usage: $0 [--userspace]" >&2; exit 2 ;;
+esac
 files=$(git ls-files 2>/dev/null | grep -E \
-  '^(config\.env|build\.sh|qemu/.*\.(patch|sh|c)|edk2/.*\.(patch|sh)|seabios/.*\.patch|acpi/.*\.(dsl|sh|py)|kernel/.*\.(py|sh)|ci/container-build\.sh|tools/make-logo\.py|\.github/workflows/build\.yml)$' \
+  "^(config\.env|build\.sh|qemu/.*\.(patch|sh|c)|edk2/.*\.(patch|sh)|seabios/.*\.patch|acpi/.*\.(dsl|sh|py)${kernel_inputs}|ci/container-build\.sh|tools/make-logo\.py|\.github/workflows/build\.yml)$" \
   | sort || true)
 [ -n "$files" ] || { echo "run inside the git repo" >&2; exit 1; }
 
