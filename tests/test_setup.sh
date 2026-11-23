@@ -29,6 +29,8 @@ grep -q 'l1_cache_handle = cpu_to_le16(0x0700)' "$ROOT/qemu/smbios-profile.sh"
 # FADT Preferred_PM_Profile is serialized directly by this pinned QEMU version.
 grep -q 'build_append_int_noprefix(tbl, 1 .* Desktop .*, 1);' "$ROOT/qemu/anti-detection.sh"
 ! grep -q 'fadt.preferred_pm_profile' "$ROOT/qemu/anti-detection.sh"
+# The ISA device must not be linked into targets without the ISA implementation.
+grep -q "system_ss.add(when: 'CONFIG_ISA', if_true: files('host-sensors.c'))" "$ROOT/build.sh"
 
 printf corrupt >> "$WORKDIR/ssdt.aml"
 if verify_assets "$WORKDIR" "${required[@]}" >/dev/null 2>&1; then
