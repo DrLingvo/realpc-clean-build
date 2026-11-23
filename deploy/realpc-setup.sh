@@ -11,6 +11,8 @@
 #            successful normal/strong installation. VM configs are untouched.
 #   configvm Install ACPI files and replace the VM args line.
 #   rollback Restore packages, module and VM configs from the state journal.
+#            A VM config changed after configvm by another tool is not
+#            overwritten: only the keys configvm sets are restored.
 #
 # Strong is the recommended mode. It is experimental and host-wide. Stop all
 # VMs, disable Secure Boot and keep a way to boot a previous kernel.
@@ -43,7 +45,17 @@ CFG_ARGS_TEMPLATE='-acpitable file=__AML__/ssdt.aml -acpitable file=__AML__/ssdt
 
 # Empty: leave the VM hardware settings unchanged.
 CFG_VM_SET="--machine q35 --bios ovmf --vga vmware --localtime 1 --tablet 1"
+
+# Shared host-tools contract (CONTRACT.md): realpc and pve-intel-gpu work on the
+# same host and the same VMs, so they share one lock, keep each other's args
+# fragments and never roll back keys they do not own.
+CFG_PVE_QEMU_DIR="/etc/pve/qemu-server"
+CFG_ARGS_D="/etc/pve-host-tools/args.d"   # <vmid>/*.args from other tools, appended to args
+CFG_LOCK="/run/lock/pve-host-tools.lock"  # Empty: no lock (not recommended)
+CFG_LOCK_TIMEOUT=60
 ############################# /CONFIG #########################################
+
+CONTRACT_VERSION=1
 
 set -uo pipefail
 
@@ -235,10 +247,20 @@ rollback(){
   fi
   local ids id cb cf
   if [[ "$auto" == 1 ]]; then ids="$TRANSACTION_VMID"; else ids="$(st_get CONF_VMS)"; fi
+  local want cur
   for id in $ids; do
     cb="$(st_get "CONF_BAK_$id")"; cf="$(st_get "CONF_PATH_$id")"
     if [[ -n "$cb" && -f "$cb" && -n "$cf" ]]; then
-      cp -f "$cb" "$cf" && ok "Restored VM $id config" || { err "Could not restore $cf"; failed=1; }
+      want="$(st_get "CONF_SHA_$id")"; cur="$(sha256sum "$cf" 2>/dev/null | cut -d' ' -f1)"
+      if [[ "$auto" == 1 || -z "$want" || "$want" == "$cur" || ! -f "$cf" ]]; then
+        cp -f "$cb" "$cf" && ok "Restored VM $id config" || { err "Could not restore $cf"; failed=1; }
+      else
+        # Host-tools contract: someone changed the VM after configvm (for example
+        # pve-intel-gpu added the iGPU). Restore only what configvm itself sets.
+        warn "VM $id config changed after configvm; restoring only args/machine/bios/vga/localtime/tablet"
+        restore_conf_keys "$cb" "$cf" "$id" && ok "Restored configvm keys of VM $id" \
+          || { err "Could not restore the configvm keys of $cf"; failed=1; }
+      fi
     fi
   done
   # Compatibility with old installer state, for explicit manual rollback only.
@@ -682,9 +704,63 @@ update_install(){ need_root
 }
 
 # CONFIGVM: a separate explicit operation; update never calls this function.
+# ---- host-tools contract helpers (CONTRACT.md) ----
+host_lock(){
+  [[ -n "$CFG_LOCK" ]] || return 0
+  mkdir -p "$(dirname "$CFG_LOCK")" 2>/dev/null || true
+  exec {HOST_LOCK_FD}>>"$CFG_LOCK" || die "Cannot open $CFG_LOCK"
+  flock -w "$CFG_LOCK_TIMEOUT" "$HOST_LOCK_FD" \
+    || die "Another host tool holds $CFG_LOCK (pve-intel-gpu.sh or another run). Try again later."
+  dbg "lock $CFG_LOCK"
+}
+# Fragments other tools keep for this VM, in file-name order, joined by spaces.
+args_fragments(){
+  local d="$CFG_ARGS_D/$1" f out=""
+  [[ -d "$d" ]] || return 0
+  for f in "$d"/*.args; do
+    [[ -f "$f" ]] || continue
+    out="${out:+$out }$(tr '\n' ' ' <"$f" | sed 's/[[:space:]]*$//')"
+  done
+  printf '%s' "$out"
+}
+# Value of KEY in the main section of a VM config (snapshot sections ignored).
+conf_main_get(){ awk -v k="$2" '/^\[/{exit} index($0, k": ")==1 {print substr($0, length(k)+3); exit}' "$1"; }
+# Set (or with a 4th argument 0, delete) KEY only in the main section.
+conf_set_main(){
+  local conf=$1 key=$2 val=$3 keep=${4:-1}
+  awk -v k="$key" -v v="$val" -v keep="$keep" '
+    BEGIN { main = 1; done = 0 }
+    main && /^\[/ { if (!done && keep == 1) { print k ": " v; done = 1 }; main = 0 }
+    main && index($0, k ": ") == 1 { if (!done && keep == 1) { print k ": " v; done = 1 }; next }
+    { print }
+    END { if (main && !done && keep == 1) print k ": " v }' "$conf" >"$conf.tmp" \
+    && mv "$conf.tmp" "$conf"
+}
+# The iGPU (00:02.0) is passed through: pve-intel-gpu owns vga for this VM.
+conf_has_igpu(){
+  awk '/^\[/{exit} /^hostpci[0-9]+: /' "$1" | grep -qE '(: |;)(0000:)?00:02\.0([,;]|$)'
+}
+restore_conf_keys(){
+  local bak=$1 conf=$2 id=$3 k v keep_vga=0 extra
+  conf_has_igpu "$conf" && keep_vga=1
+  cp -a "$conf" "$conf.rb" || return 1
+  for k in args machine bios vga localtime tablet; do
+    [[ "$k" == vga && "$keep_vga" == 1 ]] && continue
+    v="$(conf_main_get "$bak" "$k")"
+    if [[ -n "$v" ]]; then conf_set_main "$conf.rb" "$k" "$v" || return 1
+    else conf_set_main "$conf.rb" "$k" "" 0 || return 1; fi
+  done
+  extra="$(args_fragments "$id")"
+  if [[ -n "$extra" ]]; then
+    v="$(conf_main_get "$conf.rb" args)"
+    [[ "$v" == *"$extra"* ]] || conf_set_main "$conf.rb" args "${v:+$v }$extra" || return 1
+  fi
+  mv "$conf.rb" "$conf"
+}
+
 configvm(){ need_root
   [[ -n "$VMID" ]] || die "Specify --vmid N"
-  local conf="/etc/pve/qemu-server/${VMID}.conf"; [[ -f "$conf" ]] || die "Missing $conf (create the VM first)"
+  local conf="$CFG_PVE_QEMU_DIR/${VMID}.conf"; [[ -f "$conf" ]] || die "Missing $conf (create the VM first)"
   local a
   for a in "${CFG_AML[@]}"; do [[ -f "$WORKDIR/$a" ]] || die "Missing $WORKDIR/$a; run normal/strong/update first"; done
   verify_assets "$WORKDIR" "${CFG_AML[@]}" || die "ACPI files failed SHA-256 verification"
@@ -697,22 +773,36 @@ configvm(){ need_root
   cp -a "$conf" "$bak" || die "Could not back up $conf"
   local ids; ids="$(st_get CONF_VMS)"
   [[ " $ids " == *" $VMID "* ]] || st_set CONF_VMS "$ids $VMID"
-  st_set "CONF_PATH_$VMID" "$conf"; st_set "CONF_BAK_$VMID" "$bak"; ok "VM config backup: $bak"
+  st_set "CONF_PATH_$VMID" "$conf"; st_set "CONF_BAK_$VMID" "$bak"; st_set "CONF_SHA_$VMID" ""
+  ok "VM config backup: $bak"
   local model; model="${CPU_MODEL:-$(cpu_model)}"
   local args="${CFG_ARGS_TEMPLATE//__AML__/$WORKDIR}"; args="${args//__CPUMODEL__/$model}"
   if [[ "$(cpu_vendor)" != intel ]]; then
     args="${args//,host-sensors=on/}"
     info "host-sensors disabled: it is supported only on Intel hosts"
   fi
-  sed '/^args:/d' "$conf" >"$conf.tmp" || die "Could not prepare $conf"
-  echo "args: $args" >>"$conf.tmp" || die "Could not write $conf.tmp"
-  mv "$conf.tmp" "$conf" || die "Could not write $conf"
-  ok "Updated args for VM $VMID (CPU: $model)"
-  if [[ -n "${CFG_VM_SET// }" ]]; then
-    info "qm set $VMID $CFG_VM_SET"; qm set "$VMID" $CFG_VM_SET >/dev/null \
-      || die "qm set failed; the VM configuration will be restored"
-    ok "VM hardware: $CFG_VM_SET"
+  # Host-tools contract: keep the args fragments of other tools (pve-intel-gpu IGD tokens).
+  local extra; extra="$(args_fragments "$VMID")"
+  if [[ -n "$extra" ]]; then
+    args="$args $extra"; info "Kept args fragments of other host tools from $CFG_ARGS_D/$VMID"
   fi
+  # Only the main section: snapshot sections keep their own args.
+  conf_set_main "$conf" args "$args" || die "Could not write $conf"
+  ok "Updated args for VM $VMID (CPU: $model)"
+  local vmset="$CFG_VM_SET"
+  if conf_has_igpu "$conf" && [[ "$vmset" == *--vga* ]]; then
+    vmset="$(sed -E 's/(^| )--vga [^ ]+//' <<<"$vmset")"
+    info "The iGPU 00:02.0 is passed through: vga is left as is (host-tools contract)"
+  fi
+  if [[ -n "${vmset// }" ]]; then
+    info "qm set $VMID $vmset"
+    # shellcheck disable=SC2086  # word splitting of the option list is intended
+    qm set "$VMID" $vmset >/dev/null \
+      || die "qm set failed; the VM configuration will be restored"
+    ok "VM hardware: $vmset"
+  fi
+  st_set "CONF_SHA_$VMID" "$(sha256sum "$conf" | cut -d' ' -f1)"
+  st_set CONTRACT_VERSION "$CONTRACT_VERSION"
   info "The cluster-wide MAC prefix is not changed; set MAC addresses in each VM net device."
   ok "Done. Start the VM and check sensors with HWiNFO/AIDA64."
   transaction_end
@@ -722,6 +812,7 @@ configvm(){ need_root
 [[ "${REALPC_SETUP_SOURCE_ONLY:-0}" == 1 ]] && return 0
 
 do_check; echo
+[[ "$MODE" != check ]] && host_lock
 case "$MODE" in
   check)    : ;;
   normal)   install_normal ;;
