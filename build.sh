@@ -81,7 +81,7 @@ log "Applying anti-detection edits to QEMU"
   bash "$KIT/qemu/smbios-profile.sh"
   cp "$KIT/qemu/host-sensors-device.c" hw/misc/host-sensors.c
   grep -q "host-sensors.c" hw/misc/meson.build || \
-    printf "\nsystem_ss.add(when: 'CONFIG_ISA', if_true: files('host-sensors.c'))\n" >> hw/misc/meson.build
+    printf "\nsystem_ss.add(when: 'CONFIG_ISA_BUS', if_true: files('host-sensors.c'))\n" >> hw/misc/meson.build
   [ "$STRONG_PCI_IDS" = 1 ] && bash "$KIT/qemu/strong-pci-ids.sh"
   [ "$STRONG_SUBSYS_IDS" = 1 ] && bash "$KIT/qemu/strong-subsys-ids.sh"
   if [ "$HOST_SENSORS" = 1 ]; then

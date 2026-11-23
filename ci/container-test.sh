@@ -24,6 +24,7 @@ echo "=== artifacts"; ls -la out; (cd out && for f in SHA256SUMS*; do sha256sum 
 apt-get install -y --no-install-recommends ./out/pve-qemu-kvm_*_amd64.deb ./out/pve-edk2-firmware-ovmf_*_all.deb
 dpkg -l pve-qemu-kvm pve-edk2-firmware-ovmf | tail -2
 qemu-system-x86_64 --version
+qemu-system-x86_64 -device help | grep -F 'host-sensors'
 
 echo "=== fw_cfg dump (qtest, no guest code)"
 REALPC_SETUP_SOURCE_ONLY=1 source deploy/realpc-setup.sh
