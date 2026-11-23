@@ -514,6 +514,22 @@ grep -q 'libdw-dev' "$ROOT/kernel/build-kvm.sh"
 grep -q 'out/kvm.ko"' "$ROOT/kernel/build-kvm.sh"
 ! grep -q 'kvm.ko-\$KREL' "$ROOT/kernel/build-kvm.sh"
 ! grep -q 'kvm.ko-\$rel' "$ROOT/deploy/realpc-setup.sh"
+# Strong must not depend on a manually enabled deb-src repository. The git fallback
+# uses immutable commits, verifies the submodule link, and applies Proxmox patches.
+grep -q 'd4439e71d7865ecaa01a48033f96ff8ac1df16f8' "$ROOT/kernel/build-kvm.sh"
+grep -q '660d1f05673c4e02cc3c2c056afc0dc14c0075f0' "$ROOT/kernel/build-kvm.sh"
+grep -q 'ls-tree HEAD submodules/ubuntu-kernel' "$ROOT/kernel/build-kvm.sh"
+grep -q 'patch --batch -p1 -d "$prepared"' "$ROOT/kernel/build-kvm.sh"
+grep -q "maxdepth 6" "$ROOT/kernel/build-kvm.sh"
+grep -q -- '--disable LOCALVERSION_AUTO' "$ROOT/kernel/build-kvm.sh"
+grep -q '^export LOCALVERSION=$' "$ROOT/kernel/build-kvm.sh"
+! grep -q 'git.*\(main\|master\)' "$ROOT/kernel/build-kvm.sh"
+bash "$ROOT/tools/source-hash.sh" --userspace > "$TMP/userspace-recipe.txt"
+grep -q '  qemu/host-sensors-device.c' "$TMP/userspace-recipe.txt"
+! grep -q '  kernel/' "$TMP/userspace-recipe.txt"
+if bash "$ROOT/tools/source-hash.sh" invalid-mode >/dev/null 2>&1; then
+  echo "source-hash accepted an invalid mode" >&2; exit 1
+fi
 kdir="$TMP/kernel-fixture/arch/x86/kvm"
 mkdir -p "$kdir"
 cat > "$kdir/x86.c" <<'C'
