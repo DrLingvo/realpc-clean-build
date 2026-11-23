@@ -125,7 +125,7 @@ S 's/#define PCI_VENDOR_ID_REDHAT             0x1b36/#define PCI_VENDOR_ID_REDHA
 S 's/0x293/0x993/g' include/hw/pci/pci_ids.h #处理usb设备 0x2934--0x293c 这个没有经过验证
 S 's/0x9930/0x2930/g' include/hw/pci/pci_ids.h #处理usb设备 还原0x2930
 S 's/0x1af4/0x8086/g' hw/audio/hda-codec.c # QEMU_HDA_ID_VENDOR  0x1af4 =ich9-intel-hda
-S 's/fadt.preferred_pm_profile = 0;/fadt.preferred_pm_profile = 1;/g' hw/i386/acpi-build.c # Desktop power profile; zero is a QEMU indicator.
+S 's/build_append_int_noprefix(tbl, 0 \/\* Unspecified \*\/, 1);/build_append_int_noprefix(tbl, 1 \/\* Desktop \*\/, 1);/' hw/acpi/aml-build.c # Desktop power profile; zero is a QEMU indicator.
 S 's/rev = 3/rev = 4/g' hw/i386/acpi-build.c # Most VMs use an older-style FADT of length 244  bytes (revision  3), cutting off before the Sleep Control/Status registers and Hypervisor ID
 S 's/fadt.rev = 1/fadt.rev = 4/g' hw/i386/acpi-build.c # Most VMs use an older-style FADT of length 244  bytes (revision  3), cutting off before the Sleep Control/Status registers and Hypervisor ID
 S 's/if (f->rev <= 4) {/if (f->rev <= 6) {\n\t\tbuild_append_gas_from_struct(tbl, \&f->sleep_ctl);\n\t\tbuild_append_gas_from_struct(tbl, \&f->sleep_sts);/g' hw/acpi/aml-build.c # # Most VMs use an older-style FADT of length 244  bytes (revision  3), cutting off before the Sleep Control/Status registers and Hypervisor ID

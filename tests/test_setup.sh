@@ -26,6 +26,9 @@ grep -q 'slot_designation=SLOT' "$ROOT/deploy/realpc-setup.sh"
 ! grep -q 'internal_reference_designator\|external_reference_designator\|busaddr=' "$ROOT/deploy/realpc-setup.sh"
 grep -q 'T8_BASE + instance' "$ROOT/qemu/smbios-profile.sh"
 grep -q 'l1_cache_handle = cpu_to_le16(0x0700)' "$ROOT/qemu/smbios-profile.sh"
+# FADT Preferred_PM_Profile is serialized directly by this pinned QEMU version.
+grep -q 'build_append_int_noprefix(tbl, 1 .* Desktop .*, 1);' "$ROOT/qemu/anti-detection.sh"
+! grep -q 'fadt.preferred_pm_profile' "$ROOT/qemu/anti-detection.sh"
 
 printf corrupt >> "$WORKDIR/ssdt.aml"
 if verify_assets "$WORKDIR" "${required[@]}" >/dev/null 2>&1; then
