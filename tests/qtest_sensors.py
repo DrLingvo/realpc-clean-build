@@ -13,11 +13,12 @@ def cmd(command):
     while True:
         line = p.stdout.readline()
         if not line:
-            raise SystemExit("QEMU exited unexpectedly while testing host sensors")
+            raise SystemExit(f"QEMU exited unexpectedly with status {p.poll()} while testing host sensors")
         if line.startswith("FAIL"):
             raise SystemExit(f"qtest {command!r} failed: {line.strip()}")
         if line.startswith("OK"):
             return line.split()
+        print(line, end="", flush=True)
 
 try:
     values = {}

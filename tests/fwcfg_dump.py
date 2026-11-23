@@ -26,9 +26,11 @@ def cmd(c):
     while True:
         line = p.stdout.readline()
         if not line:
-            raise SystemExit("qemu exited unexpectedly")
+            raise SystemExit(f"qemu exited unexpectedly with status {p.poll()}")
         if line.startswith("OK") or line.startswith("FAIL"):
             return line.split()
+        # QEMU diagnostics share stdout with qtest in this test harness.
+        print(line, end="", flush=True)
 
 
 def select(key):
