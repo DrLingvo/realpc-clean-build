@@ -5,6 +5,7 @@ usage: check.py FWCFG_DIR OVMF_EXTRACT_DIR QEMU_BINARY
 """
 import os
 import re
+import struct
 import sys
 
 fw, ovmf_dir, qemu_bin = sys.argv[1:4]
@@ -29,6 +30,11 @@ for bad in (b"BOCHS", b"BXPC", b"QEMU", b"WAET", b"VMGENID", b"FWCF"):
 sigs = set(m.group(0).decode() for m in re.finditer(rb"(SSDT|DSDT|FACP|APIC|HPET|MCFG|SRAT|WSMT)", acpi))
 print("     ACPI signatures seen:", sorted(sigs))
 print("     fw_cfg signature:", fwfile("_signature"))
+check("WSMT" in sigs, "ACPI WSMT table is present")
+facp = acpi.find(b"FACP")
+check(facp >= 0 and acpi[facp + 45] == 1, "FADT preferred PM profile is desktop (1)")
+for name in (b"PNP0C14", b"PNP0C0C", b"PNP0C0E", b"PNP0D80", b"_TMP", b"_FST"):
+    check(name in acpi, f"ACPI contains required power/sensor object {name.decode()}")
 
 # ---------------------------------------------------------------- SMBIOS
 t = fwfile("etc/smbios/smbios-tables")
@@ -47,8 +53,33 @@ types = sorted(set(ty for ty, _, _ in tables))
 print("     SMBIOS types:", types)
 allstr = " | ".join(s for _, ss, _ in tables for s in ss)
 print("     SMBIOS strings:", allstr[:600])
-for want in (7, 9, 17, 26, 27, 28, 29, 39):
+for want in (7, 8, 9, 17, 26, 27, 28, 29, 39):
     check(want in types, f"SMBIOS type {want} present")
+check(sum(ty != 127 for ty, _, _ in tables) > 40, "SMBIOS contains more than 40 real structures")
+check(sum(ty == 8 for ty, _, _ in tables) >= 12, "SMBIOS type 8 has populated port instances")
+check(sum(ty == 9 for ty, _, _ in tables) >= 12, "SMBIOS type 9 has populated slot instances")
+handles = [struct.unpack_from("<H", body, 2)[0] for _, _, body in tables if len(body) >= 4]
+check(len(handles) == len(set(handles)), "SMBIOS structure handles are unique")
+for ty, ss, body in tables:
+    if ty in (26, 28, 29):
+        check(len(body) == 0x16, f"SMBIOS type {ty} has complete 0x16-byte structure")
+    if ty == 27:
+        check(len(body) == 0x0f, "SMBIOS type 27 has complete 0x0f-byte structure")
+        check(struct.unpack_from("<H", body, 4)[0] in (0x1c00, 0x1c01),
+              "SMBIOS cooling device links to a real temperature probe")
+    if ty == 39:
+        check(len(body) == 0x16, "SMBIOS type 39 has complete 0x16-byte structure")
+        check(struct.unpack_from("<HHH", body, 0x10) == (0x1a01, 0x1b01, 0x1d00),
+              "SMBIOS PSU links to valid voltage, fan, and current probes")
+    if ty == 28:
+        maximum = struct.unpack_from("<H", body, 6)[0]
+        minimum = struct.unpack_from("<H", body, 8)[0]
+        nominal = struct.unpack_from("<H", body, 0x14)[0]
+        check(0 <= minimum <= nominal <= maximum <= 1200,
+              "SMBIOS temperature probe uses plausible tenths-of-Celsius values")
+    if ty == 4 and len(body) >= 32:
+        check(struct.unpack_from("<HHH", body, 0x1a) == (0x0700, 0x0702, 0x0703),
+              "SMBIOS processor cache handles link to type 7 records")
 for bad in ("QEMU", "Bochs", "BOCHS", "pc-q35", "pc-i440fx", "aiiaicodo", "Standard PC"):
     check(bad not in allstr, f"SMBIOS strings contain no {bad!r}")
 # memory profile must be self-consistent (no DDR3 / no laptop SODIMM on a desktop board)

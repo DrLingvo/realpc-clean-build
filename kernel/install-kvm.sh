@@ -47,7 +47,7 @@ if [ "${1:-}" = --revert ]; then
 fi
 
 yes=0; [ "${1:-}" = --yes ] && yes=1
-mod="$here/out/kvm.ko-$KREL"
+mod="$here/out/kvm.ko"
 [ -f "$mod" ] || { echo "build it first (kernel/build-kvm.sh): $mod not found" >&2; exit 1; }
 modinfo "$mod" 2>/dev/null | grep -q '^realpc:' || { echo "REFUSING: no realpc marker in $mod" >&2; exit 1; }
 

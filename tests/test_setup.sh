@@ -14,11 +14,18 @@ mkdir -p "$WORKDIR"
 printf qemu > "$WORKDIR/pve-qemu-kvm_1_amd64.deb"
 printf ovmf > "$WORKDIR/pve-edk2-firmware-ovmf_1_all.deb"
 printf '0123456789abcdef0123456789abcdef01234567\n' > "$WORKDIR/SOURCE-COMMIT"
-for name in ssdt.aml ssdt-ec.aml hpet.aml; do printf '%s' "$name" > "$WORKDIR/$name"; done
+for name in ssdt.aml ssdt-ec.aml hpet.aml wsmt.aml; do printf '%s' "$name" > "$WORKDIR/$name"; done
 (cd "$WORKDIR" && sha256sum ./* > SHA256SUMS)
 required=(pve-qemu-kvm_1_amd64.deb pve-edk2-firmware-ovmf_1_all.deb SOURCE-COMMIT
-          ssdt.aml ssdt-ec.aml hpet.aml)
+          ssdt.aml ssdt-ec.aml hpet.aml wsmt.aml)
 verify_assets "$WORKDIR" "${required[@]}" >/dev/null
+grep -q 'dist/wsmt.aml' "$ROOT/.github/workflows/release.yml"
+# QEMU 11.1.3 accepts these SMBIOS option names; do not reintroduce newer-API spellings.
+grep -q 'internal_reference=J' "$ROOT/deploy/realpc-setup.sh"
+grep -q 'slot_designation=SLOT' "$ROOT/deploy/realpc-setup.sh"
+! grep -q 'internal_reference_designator\|external_reference_designator\|busaddr=' "$ROOT/deploy/realpc-setup.sh"
+grep -q 'T8_BASE + instance' "$ROOT/qemu/smbios-profile.sh"
+grep -q 'l1_cache_handle = cpu_to_le16(0x0700)' "$ROOT/qemu/smbios-profile.sh"
 
 printf corrupt >> "$WORKDIR/ssdt.aml"
 if verify_assets "$WORKDIR" "${required[@]}" >/dev/null 2>&1; then
@@ -99,6 +106,18 @@ for pkg in pve-qemu-kvm pve-edk2-firmware-ovmf; do
   cmp "$TMP/${pkg}_custom.deb" "$(st_get "OLD_${pkg}_DEB")" >/dev/null \
     || { echo "previous custom package was not preserved for $pkg" >&2; exit 1; }
 done
+
+# A journal-only exact backup is sufficient; no manual staging in installed/
+# or previous-downloads is required on a repeat update.
+(
+  WORKDIR="$TMP/journal-only"; STATE="$WORKDIR/.realpc-state"; mkdir -p "$WORKDIR"
+  journal="$TMP/pve-qemu-kvm_custom.deb"
+  st_set "OLD_pve-qemu-kvm_DEB" "$journal"
+  st_set SOURCE_COMMIT deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+  PRESERVED_ASSET_DIR=""
+  selected="$(find_verified_package_backup pve-qemu-kvm 11.1-test)"
+  [[ "$selected" == "$journal" ]] || { echo "journal path mismatch: $selected" >&2; exit 1; }
+) || { echo "journal-only exact package backup was not reused" >&2; exit 1; }
 
 # Old work directories preserve their previous downloads before asset cleanup.
 (
@@ -314,6 +333,19 @@ rollback 1 >/dev/null
 [[ $(cat "$TMP/101.conf") == current-101 ]] || { echo "unrelated VM 101 was rolled back" >&2; exit 1; }
 [[ $(cat "$TMP/102.conf") == backup-102 ]] || { echo "current VM 102 was not rolled back" >&2; exit 1; }
 
+# WSMT is a standard 36-byte ACPI header plus one 32-bit protection-flags field.
+python3 -I "$ROOT/acpi/build-wsmt.py" "$TMP/wsmt.aml"
+python3 -I - "$TMP/wsmt.aml" <<'PY'
+from pathlib import Path
+import struct
+import sys
+p = Path(sys.argv[1]).read_bytes()
+assert len(p) == 40 and p[:4] == b"WSMT"
+assert struct.unpack_from("<I", p, 4)[0] == 40
+assert struct.unpack_from("<I", p, 36)[0] == 0
+assert sum(p) & 0xff == 0
+PY
+
 echo "setup asset/transaction tests: PASS"
 
 # A repeat strong operation backs up the exact currently active module. It must
@@ -471,3 +503,125 @@ for failure in packages module; do
 done
 
 echo "setup update/state tests: PASS"
+
+# Kernel build fixes: exact dependency/artifact names and idempotent source edits.
+grep -q 'libdw-dev' "$ROOT/kernel/build-kvm.sh"
+grep -q 'out/kvm.ko"' "$ROOT/kernel/build-kvm.sh"
+! grep -q 'kvm.ko-\$KREL' "$ROOT/kernel/build-kvm.sh"
+! grep -q 'kvm.ko-\$rel' "$ROOT/deploy/realpc-setup.sh"
+kdir="$TMP/kernel-fixture/arch/x86/kvm"
+mkdir -p "$kdir"
+cat > "$kdir/x86.c" <<'C'
+static int complete_hypercall_exit(struct kvm_vcpu *vcpu) { return 0; }
+int kvm_emulate_hypercall(struct kvm_vcpu *vcpu) { return 0; }
+static int emulator_fix_hypercall(struct x86_emulate_ctxt *ctxt) { return 0; }
+C
+cat > "$kdir/cpuid.c" <<'C'
+void kvm_vcpu_after_set_cpuid(struct kvm_vcpu *vcpu)
+{
+	struct kvm_cpuid_entry2 *best;
+	memset(vcpu->arch.cpu_caps, 0, sizeof(vcpu->arch.cpu_caps));
+	kvm_update_cpuid_runtime(vcpu);
+}
+C
+python3 "$ROOT/kernel/kvm-antidetect.py" "$kdir/x86.c" >/dev/null
+python3 "$ROOT/kernel/kvm-antidetect.py" "$kdir/x86.c" >/dev/null
+grep -q '__maybe_unused complete_hypercall_exit' "$kdir/x86.c"
+grep -q 'realpc_clear_hypervisor_bit' "$kdir/cpuid.c"
+grep -q 'best = kvm_find_cpuid_entry(vcpu, 1)' "$kdir/cpuid.c"
+grep -q 'ecx &= ~BIT(31)' "$kdir/cpuid.c"
+[[ $(grep -c 'realpc_clear_hypervisor_bit' "$kdir/cpuid.c") == 1 ]]
+echo "kernel build/injector tests: PASS"
+
+# host-tools contract v1: locking, ordered fragments, vGPU preservation,
+# idempotence, snapshot safety, normal VGA, and hash-aware rollback.
+contract="$TMP/contract"
+mkdir -p "$contract/pve" "$contract/args.d/100" "$contract/assets/.bak"
+(
+  WORKDIR="$contract/assets"; STATE="$WORKDIR/.realpc-state"
+  PVE_QEMU_DIR="$contract/pve"; HOST_TOOLS_ARGS_D="$contract/args.d"
+  HOST_TOOLS_LOCK="$contract/host-tools.lock"; HOST_TOOLS_LOCK_TIMEOUT=60
+  need_root(){ :; }; cpu_model(){ printf 'Test CPU'; }; cpu_vendor(){ printf intel; }
+  YES=1; VMID=100
+  for name in "${CFG_AML[@]}"; do printf '%s' "$name" > "$WORKDIR/$name"; done
+  (cd "$WORKDIR" && sha256sum ./*.aml > SHA256SUMS)
+  cat > "$PVE_QEMU_DIR/100.conf" <<'CFG'
+name: contract
+vga: none
+hostpci0: 0000:00:02.0,pcie=1
+args: -set device.hostpci0.bus=pcie.0 -global old.setting=1
+[snapshot "before"]
+args: snapshot-unchanged
+vga: std
+hostpci0: 0000:00:02.0,snapshot=1
+CFG
+  printf '%s\n' '-object early=1' > "$HOST_TOOLS_ARGS_D/100/10-early.args"
+  printf '%s\n' '-set device.hostpci0.addr=0x02 -object vgpu=1' > "$HOST_TOOLS_ARGS_D/100/50-pve-intel-gpu.args"
+  qm(){
+    [[ "$1" == set ]] || return 1
+    local id=$2; shift 2
+    python3 - "$PVE_QEMU_DIR/$id.conf" "$@" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+pairs = dict(zip(sys.argv[2::2], sys.argv[3::2]))
+lines = path.read_text().splitlines(keepends=True)
+end = next((i for i, line in enumerate(lines) if line.startswith("[")), len(lines))
+main, snapshots = lines[:end], lines[end:]
+for option, value in pairs.items():
+    key = option.removeprefix("--")
+    main = [line for line in main if not line.startswith(key + ":")]
+    main.append(f"{key}: {value}\n")
+path.write_text("".join(main + snapshots))
+PY
+  }
+  configvm >/dev/null
+  conf="$PVE_QEMU_DIR/100.conf"
+  grep -q '^vga: none$' "$conf"
+  grep -q '^hostpci0: 0000:00:02.0,pcie=1$' "$conf"
+  grep -q '^CONTRACT_VERSION=1$' "$STATE"
+  [[ $(grep -c -- '-object early=1' "$conf") == 1 ]]
+  [[ $(grep -c -- '-object vgpu=1' "$conf") == 1 ]]
+  python3 - "$conf" <<'PY'
+import pathlib, sys
+text = pathlib.Path(sys.argv[1]).read_text()
+main, snapshot = text.split("[snapshot", 1)
+assert main.index("-object early=1") < main.index("-object vgpu=1")
+assert "args: snapshot-unchanged" in snapshot
+assert "vga: std" in snapshot
+assert "hostpci0: 0000:00:02.0,snapshot=1" in snapshot
+assert "-global old.setting=1" not in main
+PY
+  cp "$conf" "$contract/after-first.conf"
+  configvm >/dev/null
+  cmp "$conf" "$contract/after-first.conf" >/dev/null
+
+  # Another tool changes memory and its fragment after our recorded hash.
+  printf '\nmemory: 8192\n' >> "$conf"
+  printf '%s\n' '-set device.hostpci0.addr=0x03 -object vgpu=2' > "$HOST_TOOLS_ARGS_D/100/50-pve-intel-gpu.args"
+  rollback 0 >/dev/null
+  grep -q '^memory: 8192$' "$conf"
+  grep -q '^vga: none$' "$conf"
+  grep -q '^hostpci0: 0000:00:02.0,pcie=1$' "$conf"
+  [[ $(grep -c -- '-object vgpu=2' "$conf") == 1 ]]
+  ! grep -q -- '-object vgpu=1' "$conf"
+  grep -q 'args: snapshot-unchanged' "$conf"
+
+  # Ordinary VMs use std VGA, not the VMware adapter/driver path.
+  VMID=101
+  cat > "$PVE_QEMU_DIR/101.conf" <<'CFG'
+name: ordinary
+vga: vmware
+CFG
+  configvm >/dev/null
+  grep -q '^vga: std$' "$PVE_QEMU_DIR/101.conf"
+  ! grep -q '^vga: vmware$' "$PVE_QEMU_DIR/101.conf"
+) || { echo "host-tools contract test failed" >&2; exit 1; }
+
+# Lock contention fails closed without waiting forever.
+(
+  HOST_TOOLS_LOCK="$contract/contended.lock"; HOST_TOOLS_LOCK_TIMEOUT=1
+  exec 9>"$HOST_TOOLS_LOCK"
+  flock 9
+  if (acquire_host_tools_lock >/dev/null 2>&1); then exit 1; fi
+) || { echo "host-tools lock contention was ignored" >&2; exit 1; }
+echo "host-tools contract tests: PASS"

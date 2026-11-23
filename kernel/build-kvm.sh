@@ -16,7 +16,7 @@ KREL=$(uname -r)                       # e.g. 7.0.14-6-pve
 echo "Running kernel: $KREL"
 
 apt-get install -y --no-install-recommends build-essential libelf-dev flex bison bc \
-  libssl-dev dwarves >/dev/null
+  libssl-dev libdw-dev dwarves >/dev/null
 
 # --- locate kernel source matching $KREL ------------------------------------------------
 if [ -z "${KSRC:-}" ]; then
@@ -87,9 +87,9 @@ make prepare modules_prepare -j"$(nproc)"
 make -j"$(nproc)" M=arch/x86/kvm
 
 out="$here/out"; mkdir -p "$out"
-cp arch/x86/kvm/kvm.ko "$out/kvm.ko-$KREL"
+cp arch/x86/kvm/kvm.ko "$out/kvm.ko"
 echo
-echo "Built: $out/kvm.ko-$KREL"
-echo "vermagic: $(modinfo -F vermagic "$out/kvm.ko-$KREL")"
+echo "Built: $out/kvm.ko"
+echo "vermagic: $(modinfo -F vermagic "$out/kvm.ko")"
 echo "running : $KREL  (these must match before you load it)"
 echo "Install with kernel/install-kvm.sh (makes a backup and reloads)."
