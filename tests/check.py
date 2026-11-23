@@ -33,7 +33,16 @@ print("     fw_cfg signature:", fwfile("_signature"))
 check("WSMT" in sigs, "ACPI WSMT table is present")
 facp = acpi.find(b"FACP")
 check(facp >= 0 and acpi[facp + 45] == 1, "FADT preferred PM profile is desktop (1)")
-for name in (b"PNP0C14", b"PNP0C0C", b"PNP0C0E", b"PNP0D80", b"_TMP", b"_FST"):
+# EisaId() stores PNP IDs as little-endian compressed EISA values, not ASCII.
+pnp_ids = {
+    "PNP0C14": b"\x41\xd0\x0c\x14",
+    "PNP0C0C": b"\x41\xd0\x0c\x0c",
+    "PNP0C0E": b"\x41\xd0\x0c\x0e",
+    "PNP0D80": b"\x41\xd0\x0d\x80",
+}
+for name, encoded in pnp_ids.items():
+    check(encoded in acpi, f"ACPI contains required power/sensor object {name}")
+for name in (b"_TMP", b"_FST"):
     check(name in acpi, f"ACPI contains required power/sensor object {name.decode()}")
 
 # ---------------------------------------------------------------- SMBIOS
