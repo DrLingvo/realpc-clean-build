@@ -40,21 +40,6 @@ CFG_SOURCE_ASSET="SOURCE-COMMIT"
 
 # VM identity is generated from the real host by tools/gen-profile.py.
 # No arbitrary CPU SKU or shared hard-coded SMBIOS serial is allowed here.
-CFG_ARGS_TEMPLATE=""
-
-# Complete connector and slot instances keep WMI CIM classes populated.
-port_types=(0x10 0x10 0x10 0x10 0x1D 0x1D 0x1F 0x1F 0x1C 0x1C 0x20 0x20)
-port_connectors=(0x12 0x12 0x12 0x12 0x1F 0x1F 0x0B 0x0B 0x07 0x07 0x22 0x22)
-port_names=(USB1 USB2 USB3 USB4 AUDIO1 AUDIO2 LAN1 LAN2 VIDEO1 VIDEO2 SATA1 SATA2)
-for i in "${!port_types[@]}"; do
-  CFG_ARGS_TEMPLATE+=" -smbios type=8,internal_reference=J$((i+1)),external_reference=${port_names[$i]},connector_type=${port_connectors[$i]},port_type=${port_types[$i]}"
-done
-slot_types=(0xAA 0xA9 0xA9 0xA8 0xA8 0xA8 0xA6 0xA6 0xA6 0xA6 0xA6 0xA6)
-for i in "${!slot_types[@]}"; do
-  CFG_ARGS_TEMPLATE+=" -smbios type=9,slot_designation=SLOT$((i+1)),slot_type=${slot_types[$i]},slot_length=2,current_usage=3"
-done
-
-CFG_VM_SET="--machine q35 --bios ovmf --localtime 1 --tablet 0 --agent 0 --balloon 0"
 ############################# /CONFIG #########################################
 
 set -uo pipefail
@@ -825,6 +810,8 @@ PY
   python3 "$tools_dir/vm-config.py" --config "$conf" --profile "$profile_dir/profile.json" \
     --acpi-dir "$WORKDIR" --fragment-args "$(args_fragments "$VMID")" --out "$rendered" \
     || die "VM profile validation failed; no configuration was written"
+  python3 "$tools_dir/consistency_lint.py" --config "$rendered" --profile "$profile_dir/profile.json" \
+    || die "Cross-layer consistency lint failed; no configuration was written"
   cat "$rendered" > "$conf.realpc-tmp" || die "Could not write the temporary VM configuration"
   chmod --reference="$conf" "$conf.realpc-tmp"; mv "$conf.realpc-tmp" "$conf" \
     || die "Could not activate the VM configuration; rollback will be used"

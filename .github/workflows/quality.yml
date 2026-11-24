@@ -28,9 +28,15 @@ jobs:
 
       - name: Unit and fixture tests
         run: |
-          python3 -m unittest -v tests/test_gen_profile.py tests/test_kernel_injectors.py
+          python3 -m unittest discover -v -s tests -p 'test_*.py'
           python3 -m unittest -v tests/timing_tests/test_analyze.py
           bash tests/test_setup.sh
+
+      - name: ACPI compiler and namespace checks
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends acpica-tools
+          python3 tests/check_acpi.py
 
       - name: Strong kernel source fallback
         run: |
@@ -53,7 +59,10 @@ jobs:
       - name: Verify recipe hash coverage
         run: |
           tools/source-hash.sh > /tmp/realpc-source-hash.txt
-          for input in tools/make-logo.py ci/container-build.sh qemu/host-sensors-device.c \
+          for input in tools/make-logo.py tools/gen-profile.py tools/disk_identity.py \
+            tools/vm-config.py tools/chipset_map.py tools/smbios_tables.py \
+            tools/consistency_lint.py ci/container-build.sh qemu/host-sensors-device.c \
+            seabios/strong-fw-cfg.sh seabios/strong-host-bridge.sh \
             acpi/build-wsmt.py .github/workflows/build.yml; do
             grep -F "  $input" /tmp/realpc-source-hash.txt >/dev/null || {
               echo "$input is missing from the recipe hash" >&2; exit 1;

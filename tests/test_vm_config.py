@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import importlib.util
 import json
+import shlex
 import unittest
 from pathlib import Path
 
@@ -52,8 +53,12 @@ args: snapshot-must-not-change
         self.assertNotIn("scsihw:", result)
         for setting in ("agent: 0", "balloon: 0", "tablet: 0", "vga: std"):
             self.assertIn(setting, result)
-        self.assertIn("-set device.sata0.model=Samsung SSD 860 EVO 500GB", result)
-        self.assertIn(",version=RVT04B6Q,wwn=0x", result)
+        args = shlex.split(next(line[6:] for line in result.splitlines()
+                                if line.startswith("args: ")))
+        disk_set = args[args.index("-set") + 1]
+        self.assertTrue(disk_set.startswith(
+            "device.sata0.model=Samsung SSD 860 EVO 500GB,serial="))
+        self.assertIn(",version=RVT04B6Q,wwn=0x", disk_set)
         self.assertIn("[snapshot]\nargs: snapshot-must-not-change\n", result)
         self.assertIn('version="' + HOST_CPU + '"', result)
         topology = generated["summary"]["topology"]

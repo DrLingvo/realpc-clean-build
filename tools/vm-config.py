@@ -112,7 +112,8 @@ def render(text, profile, sizes, acpi_dir, fragment_args=""):
         value = current[old_key]
         put(main, old_key, None)
         put(main, key, value)
-        disk_args.append(f"-set device.{key}." + DISK.qemu_properties(identity))
+        properties = f"device.{key}." + DISK.qemu_properties(identity)
+        disk_args.append("-set " + shlex.quote(properties))
 
     put(main, "machine", "q35")
     put(main, "bios", "ovmf")

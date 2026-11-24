@@ -3,6 +3,7 @@
 
 usage: check.py FWCFG_DIR OVMF_EXTRACT_DIR QEMU_BINARY
 """
+import json
 import os
 import re
 import struct
@@ -62,15 +63,19 @@ types = sorted(set(ty for ty, _, _ in tables))
 print("     SMBIOS types:", types)
 allstr = " | ".join(s for _, ss, _ in tables for s in ss)
 print("     SMBIOS strings:", allstr[:600])
-for want in (7, 8, 9, 17, 26, 27, 28, 29, 39):
+for want in (7, 17, 26, 27, 28, 39, 41):
     check(want in types, f"SMBIOS type {want} present")
-check(sum(ty != 127 for ty, _, _ in tables) > 40, "SMBIOS contains more than 40 real structures")
-check(sum(ty == 8 for ty, _, _ in tables) >= 12, "SMBIOS type 8 has populated port instances")
-check(sum(ty == 9 for ty, _, _ in tables) >= 12, "SMBIOS type 9 has populated slot instances")
+check(29 not in types, "SMBIOS has no synthetic electrical-current-probe type 29")
+check(sum(ty == 7 for ty, _, _ in tables) >= 4,
+      "SMBIOS contains host-derived L1/L2/L3 cache records")
+check(sum(ty != 127 for ty, _, _ in tables) >= 12,
+      "SMBIOS contains the expected real structure groups")
 handles = [struct.unpack_from("<H", body, 2)[0] for _, _, body in tables if len(body) >= 4]
 check(len(handles) == len(set(handles)), "SMBIOS structure handles are unique")
+type7_handles = {struct.unpack_from("<H", body, 2)[0]
+                 for ty, _, body in tables if ty == 7 and len(body) >= 4}
 for ty, ss, body in tables:
-    if ty in (26, 28, 29):
+    if ty in (26, 28):
         check(len(body) == 0x16, f"SMBIOS type {ty} has complete 0x16-byte structure")
     if ty == 27:
         check(len(body) == 0x0f, "SMBIOS type 27 has complete 0x0f-byte structure")
@@ -78,8 +83,8 @@ for ty, ss, body in tables:
               "SMBIOS cooling device links to a real temperature probe")
     if ty == 39:
         check(len(body) == 0x16, "SMBIOS type 39 has complete 0x16-byte structure")
-        check(struct.unpack_from("<HHH", body, 0x10) == (0x1a01, 0x1b01, 0x1d00),
-              "SMBIOS PSU links to valid voltage, fan, and current probes")
+        check(struct.unpack_from("<HHH", body, 0x10) == (0xFFFF, 0xFFFF, 0xFFFF),
+              "SMBIOS PSU does not invent voltage, fan, or current probes")
     if ty == 28:
         maximum = struct.unpack_from("<H", body, 6)[0]
         minimum = struct.unpack_from("<H", body, 8)[0]
@@ -87,8 +92,9 @@ for ty, ss, body in tables:
         check(0 <= minimum <= nominal <= maximum <= 1200,
               "SMBIOS temperature probe uses plausible tenths-of-Celsius values")
     if ty == 4 and len(body) >= 32:
-        check(struct.unpack_from("<HHH", body, 0x1a) == (0x0700, 0x0702, 0x0703),
-              "SMBIOS processor cache handles link to type 7 records")
+        cache_links = struct.unpack_from("<HHH", body, 0x1a)
+        check(set(cache_links) <= type7_handles,
+              "SMBIOS processor cache handles link to generated type 7 records")
 for bad in ("QEMU", "Bochs", "BOCHS", "pc-q35", "pc-i440fx", "aiiaicodo", "Standard PC"):
     check(bad not in allstr, f"SMBIOS strings contain no {bad!r}")
 # memory profile must be self-consistent (no DDR3 / no laptop SODIMM on a desktop board)
@@ -99,6 +105,36 @@ for ty, ss, body in tables:
         print(f"     SMBIOS type17: memory_type=0x{mt:02x} ({memnames.get(mt,'?')}) form_factor=0x{ff:02x}")
         check(mt != 0x18, "SMBIOS memory is not DDR3 (author default was DDR3-1600)")
         check(ff != 0x0d, "SMBIOS memory form factor is not SODIMM (laptop) on a desktop board")
+
+
+def table_string(strings, index):
+    return strings[index - 1] if 0 < index <= len(strings) else ""
+
+
+dimms = [(ss, body) for ty, ss, body in tables if ty == 17 and len(body) >= 0x1b]
+check(len(dimms) >= 2, "SMBIOS memory test contains at least two DIMM instances")
+for label, offset in (("serial", 0x18), ("asset", 0x19), ("bank", 0x11)):
+    identities = [table_string(ss, body[offset]) for ss, body in dimms]
+    check(all(identities) and len(identities) == len(set(identities)),
+          f"SMBIOS DIMM {label} values are populated and unique per instance")
+
+# ---------------------------------------------------------------- PCI / type 41
+with open(os.path.join(fw, "pci.json"), encoding="utf-8") as stream:
+    pci = json.load(stream)
+pci_by_bdf = {(entry["bus"], entry["device"], entry["function"]): entry for entry in pci}
+check(all(entry["vendor_id"] != 0x1B36 for entry in pci),
+      "PCI bus 0 contains no QEMU VEN_1B36 function")
+check(any(entry["vendor_id"] == 0x8086 and entry["device_id"] == 0x10D3
+          for entry in pci), "PCI bus 0 contains the requested Intel e1000e NIC")
+type41 = [(ss, body) for ty, ss, body in tables if ty == 41 and len(body) >= 0x0b]
+check(len(type41) == 1, "SMBIOS has exactly one onboard-LAN type 41 record")
+for ss, body in type41:
+    bdf = (body[9], body[0x0a] >> 3, body[0x0a] & 7)
+    nic = pci_by_bdf.get(bdf)
+    check(nic is not None and nic["vendor_id"] == 0x8086 and nic["device_id"] == 0x10D3,
+          "SMBIOS type 41 BDF resolves to the actual e1000e PCI function")
+    check(table_string(ss, body[4]) == "Onboard LAN",
+          "SMBIOS type 41 has the onboard-LAN designation")
 
 # ---------------------------------------------------------------- QEMU binary strings
 blob = open(qemu_bin, "rb").read()

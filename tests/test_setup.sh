@@ -21,9 +21,9 @@ required=(pve-qemu-kvm_1_amd64.deb pve-edk2-firmware-ovmf_1_all.deb SOURCE-COMMI
           realpc-vm-tools.tar.gz ssdt.aml wsmt.aml)
 verify_assets "$WORKDIR" "${required[@]}" >/dev/null
 grep -q 'dist/wsmt.aml' "$ROOT/.github/workflows/release.yml"
-# QEMU 11.1.3 accepts these SMBIOS option names; do not reintroduce newer-API spellings.
-grep -q 'internal_reference=J' "$ROOT/deploy/realpc-setup.sh"
-grep -q 'slot_designation=SLOT' "$ROOT/deploy/realpc-setup.sh"
+# Production VM arguments come only from the generated host profile.
+grep -q 'gen-profile.py' "$ROOT/deploy/realpc-setup.sh"
+! grep -q 'CFG_ARGS_TEMPLATE\|CFG_VM_SET' "$ROOT/deploy/realpc-setup.sh"
 ! grep -q 'internal_reference_designator\|external_reference_designator\|busaddr=' "$ROOT/deploy/realpc-setup.sh"
 grep -q 'T8_BASE + instance' "$ROOT/qemu/smbios-profile.sh"
 grep -q 'l1_cache_handle = cpu_to_le16(0x0700)' "$ROOT/qemu/smbios-profile.sh"
@@ -553,7 +553,7 @@ mkdir -p "$contract/pve" "$contract/args.d/100" "$contract/assets/.bak"
   need_root(){ :; }; cpu_model(){ printf 'Test CPU'; }; cpu_vendor(){ printf intel; }
   YES=1; VMID=100
   for name in "${CFG_AML[@]}"; do printf '%s' "$name" > "$WORKDIR/$name"; done
-  tar -C "$ROOT/tools" -czf "$WORKDIR/$CFG_VM_TOOLS_ASSET" gen-profile.py disk_identity.py vm-config.py chipset_map.py smbios_tables.py
+  tar -C "$ROOT/tools" -czf "$WORKDIR/$CFG_VM_TOOLS_ASSET" gen-profile.py disk_identity.py vm-config.py chipset_map.py smbios_tables.py consistency_lint.py
   (cd "$WORKDIR" && sha256sum ./*.aml "$CFG_VM_TOOLS_ASSET" > SHA256SUMS)
   for id in 100 101; do
     python3 "$ROOT/tools/gen-profile.py" --platform intel_desktop_lga1200 \

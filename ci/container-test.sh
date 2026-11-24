@@ -26,14 +26,44 @@ dpkg -l pve-qemu-kvm pve-edk2-firmware-ovmf | tail -2
 qemu-system-x86_64 --version
 qemu-system-x86_64 -device help | grep -F 'host-sensors'
 
-echo "=== fw_cfg dump (qtest, no guest code)"
-REALPC_SETUP_SOURCE_ONLY=1 source deploy/realpc-setup.sh
-vm_args_text="${CFG_ARGS_TEMPLATE//__AML__/$(pwd)/out}"
-vm_args_text="${vm_args_text//__CPUMODEL__/Test CPU}"
-vm_args_text="${vm_args_text/-cpu host,/-cpu max,}"
-eval "vm_args=($vm_args_text)"
-python3 -I tests/fwcfg_dump.py /tmp/fw -- qemu-system-x86_64 -accel qtest -machine q35 -m 4096 -smp 8 \
-  -display none -nodefaults -qtest stdio "${vm_args[@]}"
+echo "=== generated Strong-real profile"
+qtest_profile=/tmp/realpc-qtest-profile
+python3 tools/gen-profile.py --platform intel_desktop_lga1200 \
+  --host-vendor intel --host-cpu-model 'Test CPU' --socket LGA1200 \
+  --seed 42 --vmid 100 --out "$qtest_profile"
+cat > /tmp/realpc-qtest-input.conf <<'CFG'
+memory: 32768
+net0: e1000e=02:F0:5D:01:02:03,bridge=vmbr0
+CFG
+python3 tools/vm-config.py --config /tmp/realpc-qtest-input.conf \
+  --profile "$qtest_profile/profile.json" --acpi-dir "$(pwd)/out" \
+  --out /tmp/realpc-qtest.conf
+python3 tools/consistency_lint.py --config /tmp/realpc-qtest.conf \
+  --profile "$qtest_profile/profile.json"
+python3 -I - /tmp/realpc-qtest.conf > /tmp/realpc-qtest-args <<'PY'
+import shlex, sys
+lines = open(sys.argv[1]).read().splitlines()
+args = shlex.split(next(line[6:] for line in lines if line.startswith("args: ")))
+index = args.index("-cpu") + 1
+assert args[index].startswith("host,")
+args[index] = "max," + args[index][5:]
+for arg in args:
+    print(arg)
+PY
+mapfile -t vm_args < /tmp/realpc-qtest-args
+python3 -I - "$qtest_profile/profile.json" > /tmp/realpc-qtest-identity <<'PY'
+import json, sys
+profile = json.load(open(sys.argv[1]))["summary"]
+topology = profile["topology"]
+print(profile["mac"])
+print(topology["sockets"] * topology["cores"] * topology["threads"])
+PY
+mapfile -t qtest_identity < /tmp/realpc-qtest-identity
+
+echo "=== fw_cfg and PCI dump (qtest, no guest code)"
+python3 -I tests/fwcfg_dump.py /tmp/fw -- qemu-system-x86_64 -accel qtest -machine q35 \
+  -m 32768 -smp "${qtest_identity[1]}" -display none -nodefaults -qtest stdio \
+  "${vm_args[@]}" -device "e1000e,id=net0,mac=${qtest_identity[0]}"
 
 echo "=== host sensor I/O registers"
 python3 -I tests/qtest_sensors.py -- qemu-system-x86_64 -accel qtest -machine q35 -m 1024 \
