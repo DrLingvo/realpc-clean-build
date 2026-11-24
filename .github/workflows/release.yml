@@ -8,8 +8,13 @@ on:
   workflow_dispatch:
     inputs:
       run_id:
-        description: 'build run id to release (blank = latest successful)'
+        description: 'build run id to release or reuse (blank = latest successful)'
         required: false
+      installer_only:
+        description: 'reuse binaries; take installer/kernel tools from dispatched main'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -26,6 +31,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           id="${{ github.event.inputs.run_id }}"
+          installer_only="${{ github.event.inputs.installer_only }}"
           if [ "${{ github.event_name }}" = push ]; then
             # A tag release must contain artifacts built from the tagged commit, never merely
             # the latest successful build of some other main-branch state.
@@ -37,16 +43,56 @@ jobs:
               -L 1 --json databaseId -q '.[0].databaseId')
           fi
           [ -n "$id" ] || { echo "No successful build run found" >&2; exit 1; }
-          conclusion=$(gh run view "$id" -R "$GITHUB_REPOSITORY" --json conclusion -q .conclusion)
-          [ "$conclusion" = success ] || { echo "Build run $id is not successful" >&2; exit 1; }
-          sha=$(gh run view "$id" -R "$GITHUB_REPOSITORY" --json headSha -q .headSha)
+          json=$(gh run view "$id" -R "$GITHUB_REPOSITORY" --json conclusion,headSha,workflowName)
+          [ "$(jq -r .conclusion <<<"$json")" = success ] || { echo "Build run $id is not successful" >&2; exit 1; }
+          [ "$(jq -r .workflowName <<<"$json")" = build ] || { echo "Run $id is not a build run" >&2; exit 1; }
+          artifact_sha=$(jq -r .headSha <<<"$json")
+          release_sha="$artifact_sha"
+          if [ "$installer_only" = true ]; then
+            [ "${{ github.event_name }}" = workflow_dispatch ] && [ "$GITHUB_REF_NAME" = main ] \
+              || { echo "Installer-only releases must be dispatched from main" >&2; exit 1; }
+            release_sha="$GITHUB_SHA"
+          fi
           echo "id=$id" >> "$GITHUB_OUTPUT"
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "Releasing artifacts from build run $id (commit $sha)"
+          echo "artifact_sha=$artifact_sha" >> "$GITHUB_OUTPUT"
+          echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
+          echo "installer_only=$installer_only" >> "$GITHUB_OUTPUT"
+          echo "Artifacts: build $id ($artifact_sha); installer source: $release_sha"
 
       - uses: actions/checkout@v5
         with:
-          ref: ${{ steps.run.outputs.sha }}
+          ref: ${{ steps.run.outputs.release_sha }}
+          path: source
+
+      - uses: actions/checkout@v5
+        if: ${{ steps.run.outputs.installer_only == 'true' }}
+        with:
+          ref: ${{ steps.run.outputs.artifact_sha }}
+          path: artifact-source
+
+      - name: Verify installer-only artifact reuse
+        id: recipe
+        if: ${{ steps.run.outputs.installer_only == 'true' }}
+        run: |
+          # Compare every binary recipe input except host-built kernel tools. The full
+          # source-hash output supplies stable per-file hashes; remove kernel lines before
+          # calculating the userspace-only hash. Both trees use the same implementation.
+          userspace_hash() (
+            set -euo pipefail
+            cd "$1"
+            bash tools/source-hash.sh | awk '/^  / {
+              sub(/^  /, "")
+              if ($2 !~ /^kernel\//) print
+            }' | sha256sum | awk '{print $1}'
+          )
+          new_hash=$(userspace_hash source)
+          old_hash=$(userspace_hash artifact-source)
+          [ -n "$new_hash" ] && [ "$new_hash" = "$old_hash" ] || {
+            echo "Userspace recipes differ; installer-only reuse is forbidden" >&2
+            exit 1
+          }
+          echo "hash=$new_hash" >> "$GITHUB_OUTPUT"
+          echo "Verified identical userspace recipe $new_hash"
 
       - uses: actions/download-artifact@v5
         with:
@@ -68,10 +114,15 @@ jobs:
           mkdir -p rel
           cp "${qemu[@]}" "${ovmf[@]}" rel/
           cp dist/ssdt.aml dist/ssdt-ec.aml dist/hpet.aml dist/wsmt.aml dist/*-applied.diff rel/
-          # The installer and kernel tools come from the exact same commit as the artifacts.
-          tar -C kernel --exclude='./out' --exclude='./__pycache__' -czf rel/realpc-kernel-tools.tar.gz .
-          cp deploy/realpc-setup.sh deploy/install-userspace.sh rel/
-          printf '%s\n' "${{ steps.run.outputs.sha }}" > rel/SOURCE-COMMIT
+          # Normal releases use the same commit for everything. Installer-only releases
+          # take host-side tools from main and reuse binaries only after the hash guard.
+          tar -C source/kernel --exclude='./out' --exclude='./__pycache__' -czf rel/realpc-kernel-tools.tar.gz .
+          cp source/deploy/realpc-setup.sh source/deploy/install-userspace.sh rel/
+          printf '%s\n' "${{ steps.run.outputs.release_sha }}" > rel/SOURCE-COMMIT
+          printf '%s\n' "${{ steps.run.outputs.artifact_sha }}" > rel/ARTIFACT-SOURCE-COMMIT
+          if [ "${{ steps.run.outputs.installer_only }}" = true ]; then
+            printf '%s\n' "${{ steps.recipe.outputs.hash }}" > rel/USERSPACE-RECIPE-SHA256
+          fi
           echo "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ steps.run.outputs.id }}" > rel/BUILD-RUN-URL
           ( cd rel && sha256sum ./* > SHA256SUMS )
           ls -la rel
@@ -113,5 +164,8 @@ jobs:
           guest and treat ERROR/incomplete results as a failed test run, not as a pass.
           EOF
           )
+          if [ "${{ steps.run.outputs.installer_only }}" = true ]; then
+            notes="Installer-only release: verified QEMU/OVMF/ACPI artifacts are reused after a userspace recipe-hash match. SOURCE-COMMIT identifies installer/kernel tools; ARTIFACT-SOURCE-COMMIT identifies binary sources."$'\n\n'"$notes"
+          fi
           gh release create "${{ steps.tag.outputs.name }}" rel/* \
             -R "$GITHUB_REPOSITORY" -t "${{ steps.tag.outputs.name }}" -n "$notes"

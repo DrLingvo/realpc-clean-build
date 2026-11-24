@@ -16,25 +16,109 @@ KREL=$(uname -r)                       # e.g. 7.0.14-6-pve
 echo "Running kernel: $KREL"
 
 apt-get install -y --no-install-recommends build-essential libelf-dev flex bison bc \
-  libssl-dev libdw-dev dwarves >/dev/null
+  libssl-dev libdw-dev dwarves git patch >/dev/null
+
+# Fetch only immutable full commits. Never build root-running code from a moving branch.
+fetch_exact_commit(){
+  local dir=$1 url=$2 commit=$3 attempt
+  git init -q "$dir"
+  git -C "$dir" remote add origin "$url"
+  for attempt in 1 2 3; do
+    if git -C "$dir" fetch --depth 1 origin "$commit"; then
+      git -C "$dir" checkout -q --detach FETCH_HEAD
+      [ "$(git -C "$dir" rev-parse HEAD)" = "$commit" ]
+      return
+    fi
+    sleep 5
+  done
+  echo "Could not fetch pinned commit $commit from $url" >&2
+  return 1
+}
+
+fetch_pinned_source(){
+  local pve_commit ubuntu_commit
+  case "$KREL" in
+    7.0.14-6-pve)
+      pve_commit=d4439e71d7865ecaa01a48033f96ff8ac1df16f8
+      ubuntu_commit=660d1f05673c4e02cc3c2c056afc0dc14c0075f0
+      ;;
+    *) return 1 ;;
+  esac
+
+  local root="/usr/src/realpc-kernel-$KREL"
+  local pve_dir="$root/pve-kernel"
+  local marker="$root/.source-ready"
+  local prepared="$root/ubuntu-kernel"
+  if [ -f "$marker" ] && [ -d "$prepared/.git" ] \
+    && grep -Fxq "PVE_KERNEL_COMMIT=$pve_commit" "$marker" \
+    && grep -Fxq "UBUNTU_KERNEL_COMMIT=$ubuntu_commit" "$marker" \
+    && [ "$(git -C "$prepared" rev-parse HEAD 2>/dev/null)" = "$ubuntu_commit" ] \
+    && [ -f "$root/.pristine/x86.c" ] && [ -f "$root/.pristine/cpuid.c" ]; then
+    KSRC=$prepared
+    cp "$root/.pristine/x86.c" "$KSRC/arch/x86/kvm/x86.c"
+    cp "$root/.pristine/cpuid.c" "$KSRC/arch/x86/kvm/cpuid.c"
+    echo "Kernel source: cached pinned Proxmox source in $KSRC"
+    return
+  fi
+
+  rm -rf -- "$root"
+  mkdir -p "$pve_dir" "$prepared"
+  echo "Fetching pve-kernel commit $pve_commit..."
+  fetch_exact_commit "$pve_dir" https://git.proxmox.com/git/pve-kernel.git "$pve_commit"
+  local linked
+  linked=$(git -C "$pve_dir" ls-tree HEAD submodules/ubuntu-kernel | awk '$1 == "160000" {print $3}')
+  [ "$linked" = "$ubuntu_commit" ] || {
+    echo "pve-kernel links ubuntu-kernel $linked, expected $ubuntu_commit" >&2
+    return 1
+  }
+  echo "Fetching ubuntu-kernel commit $ubuntu_commit..."
+  fetch_exact_commit "$prepared" https://git.proxmox.com/git/mirror_ubuntu-kernels.git "$ubuntu_commit"
+
+  local upstream
+  upstream=$(awk '/^VERSION =/{v=$3} /^PATCHLEVEL =/{p=$3} /^SUBLEVEL =/{s=$3}
+    END{print v "." p "." s}' "$prepared/Makefile")
+  [ "$upstream" = "${KREL%%-*}" ] || {
+    echo "Pinned source is Linux $upstream, running kernel is $KREL" >&2
+    return 1
+  }
+  sed -i "s/^EXTRAVERSION.*/EXTRAVERSION = -${KREL#*-}/" "$prepared/Makefile"
+  grep -Fxq "EXTRAVERSION = -${KREL#*-}" "$prepared/Makefile"
+
+  local patch_file
+  for patch_file in "$pve_dir"/patches/kernel/*.patch; do
+    [ -f "$patch_file" ] || { echo "No Proxmox kernel patches found" >&2; return 1; }
+    echo "Applying Proxmox patch $(basename "$patch_file")"
+    patch --batch -p1 -d "$prepared" < "$patch_file"
+  done
+  mkdir -p "$root/.pristine"
+  cp "$prepared/arch/x86/kvm/x86.c" "$root/.pristine/x86.c"
+  cp "$prepared/arch/x86/kvm/cpuid.c" "$root/.pristine/cpuid.c"
+  printf 'PVE_KERNEL_COMMIT=%s\nUBUNTU_KERNEL_COMMIT=%s\n' \
+    "$pve_commit" "$ubuntu_commit" > "$marker"
+  KSRC=$prepared
+}
 
 # --- locate kernel source matching $KREL ------------------------------------------------
 if [ -z "${KSRC:-}" ]; then
   pkg="proxmox-kernel-${KREL}"
   srcdir="/usr/src/kernel-src-$KREL"
   mkdir -p "$srcdir"; cd "$srcdir"
-  echo "Fetching source for $pkg (needs a deb-src line for the Proxmox repo)..."
-  if ! apt-get source "$pkg" 2>/dev/null; then
-    cat >&2 <<EOF
-Could not apt-get source $pkg.
-Add a deb-src entry for the Proxmox repo, or pass KSRC=/path to a kernel source tree that
-matches $KREL, then re-run. On Proxmox the source also lives in the pve-kernel git
-(submodule ubuntu-kernel) at the tag for this version.
+  echo "Fetching source for $pkg with apt-get source..."
+  if apt-get source "$pkg"; then
+    found=$(find "$srcdir" -maxdepth 6 -type f -path '*/arch/x86/kvm/Makefile' -print -quit)
+    [ -n "$found" ] || { echo "apt source completed but no KVM Makefile was found" >&2; exit 1; }
+    KSRC=${found%/arch/x86/kvm/Makefile}
+  else
+    echo "apt source is unavailable; trying immutable Proxmox git commits..."
+    if ! fetch_pinned_source; then
+      cat >&2 <<EOF
+Could not obtain exact source for $KREL.
+Pass KSRC=/path to a matching prepared kernel source tree. The automatic git fallback
+currently has verified pins only for 7.0.14-6-pve; other kernels require apt deb-src.
 EOF
-    exit 1
+      exit 1
+    fi
   fi
-  KSRC=$(dirname "$(find "$srcdir" -maxdepth 3 -path '*arch/x86/kvm/Makefile' | head -1)")
-  KSRC=${KSRC%/arch/x86/kvm}
 fi
 [ -f "$KSRC/arch/x86/kvm/Makefile" ] || { echo "no kvm source under KSRC=$KSRC" >&2; exit 1; }
 echo "Kernel source: $KSRC"
@@ -49,8 +133,12 @@ else
   echo "no /boot/config-$KREL; using the tree's default config" >&2
   make defconfig
 fi
-# keep the exact version suffix so vermagic matches ("-pve", etc.)
+# Keep the exact version suffix so vermagic matches ("-pve", etc.). A prepared git
+# tree is intentionally dirty after Proxmox/realpc patches. Exporting an empty
+# LOCALVERSION also suppresses the '+' that scripts/setlocalversion adds to git trees.
+export LOCALVERSION=
 scripts/config --set-str LOCALVERSION "" >/dev/null 2>&1 || true
+scripts/config --disable LOCALVERSION_AUTO >/dev/null 2>&1 || true
 make olddefconfig >/dev/null
 built_release=$(make -s kernelrelease)
 [ "$built_release" = "$KREL" ] || {
