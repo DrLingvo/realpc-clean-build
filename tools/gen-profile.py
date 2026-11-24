@@ -29,6 +29,13 @@ import shlex
 import subprocess
 import sys
 import uuid
+import importlib.util
+from pathlib import Path
+
+CHIPSET_SPEC = importlib.util.spec_from_file_location(
+    "chipset_map", str(Path(__file__).with_name("chipset_map.py")))
+CHIPSET = importlib.util.module_from_spec(CHIPSET_SPEC)
+CHIPSET_SPEC.loader.exec_module(CHIPSET)
 
 # memory_type byte (SMBIOS 7.18.2): DDR3=0x18 DDR4=0x1a DDR5=0x22
 # form_factor (7.18.1): DIMM=0x09 SODIMM=0x0d
@@ -52,14 +59,6 @@ MEM_CLASS = {
         ("SK Hynix", "HMA82GR7DJR8N-XN", 3200)]),
 }
 FF_NAME = {DIMM: "DIMM", SODIMM: "SODIMM"}
-
-# board maker -> PCI subsystem vendor id (for STRONG_SUBSYS_IDS, so onboard devices carry the
-# board's id instead of 0x1af4 Red Hat)
-SUBSYS_VENDOR = {
-    "ASUSTeK COMPUTER INC.": 0x1043, "Micro-Star International Co., Ltd.": 0x1462,
-    "Gigabyte Technology Co., Ltd.": 0x1458, "Maxsun": 0x1462, "LENOVO": 0x17AA,
-    "Dell Inc.": 0x1028, "HP": 0x103C, "Supermicro": 0x15D9,
-}
 
 AMI = "American Megatrends International, LLC."
 
@@ -212,7 +211,7 @@ def detect_host_socket():
 
 
 def gen(platform, kind, host_sensors, pmu=True, tsc_pin=False, host_vendor="unknown",
-        cpu_source="host", host_cpu_model=None, cpu_model=None):
+        cpu_source="host", host_cpu_model=None, cpu_model=None, chipset_map=None):
     p = PLATFORMS[platform]
     if host_vendor != "unknown" and host_vendor != platform_vendor(platform):
         raise ValueError(f"platform {platform} does not match {host_vendor} host CPU")
@@ -230,7 +229,13 @@ def gen(platform, kind, host_sensors, pmu=True, tsc_pin=False, host_vendor="unkn
         cpu = cpu_model.strip() if cpu_model else random.choice(cpus)
         if not cpu or any(ord(c) < 32 for c in cpu):
             raise ValueError("model mode requires a printable, non-empty CPU SKU")
-    board_vendor, board_model = random.choice(p["boards"])
+    records = (chipset_map or {}).get("records", [])
+    mapped_boards = [(record, (record["board"]["manufacturer"], record["board"]["product"]))
+                     for record in records
+                     if record["board"]["socket"].upper() == p["socket"].upper()
+                     and (record["board"]["manufacturer"], record["board"]["product"]) in p["boards"]]
+    chipset_record, (board_vendor, board_model) = (random.choice(mapped_boards)
+        if mapped_boards else (None, random.choice(p["boards"])))
     mem_vendor, mem_part, speed = random.choice(kits)
     serial17 = rnd_hex(8)
     asset17 = rnd_digits(10)
@@ -255,9 +260,11 @@ def gen(platform, kind, host_sensors, pmu=True, tsc_pin=False, host_vendor="unkn
         "MEM_VMAX": str(mem_volt),
         "MEM_VCFG": str(mem_volt),
         "CPU_SOCKET": p["socket"],
-        "SUBSYS_VENDOR_HEX": f"0x{SUBSYS_VENDOR.get(board_vendor, 0x1043):04x}",
-        "SUBSYS_DEVICE_HEX": f"0x{random.randint(0x8000, 0x8fff):04x}",
     }
+    if chipset_record:
+        subvendor, subdevice = CHIPSET.subsystem_identity(chipset_record)
+        env["SUBSYS_VENDOR_HEX"] = f"0x{subvendor:04x}"
+        env["SUBSYS_DEVICE_HEX"] = f"0x{subdevice:04x}"
 
     # -cpu options: a real CPU exposes an architectural PMU (CPUID.0AH) and a fixed TSC
     # frequency. pmu=on turns on KVM's in-guest PMU so CPUID.0AH is non-zero (its absence is
@@ -288,6 +295,8 @@ def gen(platform, kind, host_sensors, pmu=True, tsc_pin=False, host_vendor="unkn
         "board": f"{board_vendor} {board_model}", "socket": p["socket"],
         "memory": f"{mem_vendor} {mem_part} @ {speed} MT/s (type 0x{mem_type:02x}, {FF_NAME[mem_form]})",
         "bios": f"{bios_vendor} {bios_ver} ({bios_date})", "mac": mac, "uuid": sys_uuid,
+        "chipset": ("real-dump " + CHIPSET.board_key(chipset_record["board"])
+                    if chipset_record else "unmapped; identity-only QEMU defaults"),
         "pmu": "on" if pmu else "off",
         "tsc": (f"pinned {tsc_hz/1e9:.2f} GHz" if (tsc_pin and tsc_hz)
                 else ("host (not pinned)" if not tsc_pin
@@ -304,6 +313,8 @@ def main():
                     help="host: exact host CPU identity; model: Strong-skin skeleton")
     ap.add_argument("--cpu-model", help="SKU for --cpu-source model; forbidden in host mode")
     ap.add_argument("--host-cpu-model", help=argparse.SUPPRESS)
+    ap.add_argument("--chipset-map", default=str(Path(__file__).resolve().parents[1] /
+                                                   "profiles" / "chipset-map.json"))
     ap.add_argument("--socket", help="physical host socket; default: dmidecode")
     ap.add_argument("--seed", type=int)
     ap.add_argument("--vmid", help="stable VM identifier recorded in profile.conf")
@@ -345,10 +356,12 @@ def main():
     platform = a.platform or random.choice(compatible)
     if platform not in compatible:
         ap.error(f"platform {platform} does not match host vendor {host_vendor} and socket {socket or 'unknown'}")
+    chipset_path = Path(a.chipset_map)
+    chipset_map = json.loads(chipset_path.read_text()) if chipset_path.exists() else None
     env, args, summary, (mem_type, mem_form), tsc_pinned = gen(
         platform, a.kind, a.host_sensors, pmu=bool(a.pmu), tsc_pin=bool(a.tsc_pin),
         host_vendor=host_vendor, cpu_source=a.cpu_source,
-        host_cpu_model=host_cpu_model, cpu_model=a.cpu_model)
+        host_cpu_model=host_cpu_model, cpu_model=a.cpu_model, chipset_map=chipset_map)
 
     import os
     os.makedirs(a.out, exist_ok=True)
