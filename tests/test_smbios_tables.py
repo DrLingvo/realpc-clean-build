@@ -62,6 +62,11 @@ class SMBIOSTableTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             MODULE.cache_record({"level": 2, "type": "Unified", "size_kb": 256, "ways": 3}, 0)
 
+    def test_q35_uses_the_selected_16_gib_dimm_kit(self):
+        recipe = (ROOT / "qemu" / "anti-detection.sh").read_text(encoding="utf-8")
+        self.assertIn("m->smbios_memory_device_size = 16 * GiB;", recipe)
+        self.assertIn("pc_q35_machine_options(m);", recipe)
+
     def test_qemu_patch_has_no_fixed_cache_sizes(self):
         patch = (ROOT / "qemu" / "smbios.patch").read_text(encoding="utf-8")
         self.assertNotIn("smbios_build_type_7_table", patch)

@@ -52,6 +52,8 @@ S '/create fw_cfg node/,/}/s/{/\/*{/' hw/i386/acpi-build.c
 S 's/"QEMU/"'${brand}'/g' hw/i386/fw_cfg.c
 S 's/Standard PC (i440FX + PIIX, 1996)/'${brand}' M4A88TD-Mi440fx/g' hw/i386/pc_piix.c
 S 's/Standard PC (Q35 + ICH9, 2009)/'${brand}' M4A88TD-Mq35/g' hw/i386/pc_q35.c
+# Strong profiles use a 16-GiB DIMM kit; QEMU 11.1 otherwise defaults to 2-TiB devices.
+S 's/    pc_q35_machine_options(m);/    pc_q35_machine_options(m);\n    m->smbios_memory_device_size = 16 * GiB;/' hw/i386/pc_q35.c
 S 's/"QEMU/"'${brand}'/g' hw/ide/atapi.c
 S 's/"QEMU/"'${brand}'/g' hw/ide/core.c
 #sed -i 's/QM%05d/'${brand}'-aiiaicodo666-%02d/g' hw/ide/core.c  #ide sata硬盘序列号drive_serial_str 20字符大小 这个是固定硬盘序列号方法，下面三行是硬盘随机序列号方法
