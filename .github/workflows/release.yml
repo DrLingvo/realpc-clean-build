@@ -119,6 +119,7 @@ jobs:
           tar -C source/kernel --exclude='./out' --exclude='./__pycache__' -czf rel/realpc-kernel-tools.tar.gz .
           tar -C source/tools -czf rel/realpc-vm-tools.tar.gz gen-profile.py disk_identity.py vm-config.py chipset_map.py smbios_tables.py consistency_lint.py
           cp source/deploy/realpc-setup.sh source/deploy/install-userspace.sh rel/
+          cp source/tests/guest_audit.ps1 rel/
           printf '%s\n' "${{ steps.run.outputs.release_sha }}" > rel/SOURCE-COMMIT
           printf '%s\n' "${{ steps.run.outputs.artifact_sha }}" > rel/ARTIFACT-SOURCE-COMMIT
           if [ "${{ steps.run.outputs.installer_only }}" = true ]; then

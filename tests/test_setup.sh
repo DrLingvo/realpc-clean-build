@@ -21,6 +21,7 @@ required=(pve-qemu-kvm_1_amd64.deb pve-edk2-firmware-ovmf_1_all.deb SOURCE-COMMI
           realpc-vm-tools.tar.gz ssdt.aml wsmt.aml)
 verify_assets "$WORKDIR" "${required[@]}" >/dev/null
 grep -q 'dist/wsmt.aml' "$ROOT/.github/workflows/release.yml"
+grep -q 'source/tests/guest_audit.ps1' "$ROOT/.github/workflows/release.yml"
 # Production VM arguments come only from the generated host profile.
 grep -q 'gen-profile.py' "$ROOT/deploy/realpc-setup.sh"
 ! grep -q 'CFG_ARGS_TEMPLATE\|CFG_VM_SET' "$ROOT/deploy/realpc-setup.sh"
