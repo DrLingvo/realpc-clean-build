@@ -26,6 +26,17 @@ class OptionalReskinTest(unittest.TestCase):
         self.assertNotIn('char *sig = "intel"', seabios)
         self.assertNotIn("//return 0", seabios)
 
+    def test_disabled_reskins_cannot_fail_build_block_exit_status(self):
+        build = (ROOT / "build.sh").read_text()
+        for component in ("qemu", "seabios"):
+            for option, script in (("STRONG_FW_CFG", "strong-fw-cfg.sh"),
+                                   ("STRONG_HOST_BRIDGE", "strong-host-bridge.sh")):
+                self.assertIn(
+                    f'if [ "${option}" = 1 ]; then bash "$KIT/{component}/{script}"; fi',
+                    build)
+                self.assertNotIn(
+                    f'[ "${option}" = 1 ] && bash "$KIT/{component}/{script}"', build)
+
     def test_fw_cfg_patchers_cover_qemu_ovmf_seabios_and_optionrom(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

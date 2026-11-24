@@ -80,10 +80,10 @@ log "Applying anti-detection edits to QEMU"
   cp "$KIT/qemu/host-sensors-device.c" hw/misc/host-sensors.c
   grep -q "host-sensors.c" hw/misc/meson.build || \
     printf "\nsystem_ss.add(when: 'CONFIG_ISA_BUS', if_true: files('host-sensors.c'))\n" >> hw/misc/meson.build
-  [ "$STRONG_PCI_IDS" = 1 ] && bash "$KIT/qemu/strong-pci-ids.sh"
-  [ "$STRONG_SUBSYS_IDS" = 1 ] && bash "$KIT/qemu/strong-subsys-ids.sh"
-  [ "$STRONG_FW_CFG" = 1 ] && bash "$KIT/qemu/strong-fw-cfg.sh"
-  [ "$STRONG_HOST_BRIDGE" = 1 ] && bash "$KIT/qemu/strong-host-bridge.sh"
+  if [ "$STRONG_PCI_IDS" = 1 ]; then bash "$KIT/qemu/strong-pci-ids.sh"; fi
+  if [ "$STRONG_SUBSYS_IDS" = 1 ]; then bash "$KIT/qemu/strong-subsys-ids.sh"; fi
+  if [ "$STRONG_FW_CFG" = 1 ]; then bash "$KIT/qemu/strong-fw-cfg.sh"; fi
+  if [ "$STRONG_HOST_BRIDGE" = 1 ]; then bash "$KIT/qemu/strong-host-bridge.sh"; fi
   if [ "$HOST_SENSORS" = 1 ]; then
     patch -p1 --forward < "$KIT/qemu/host-sensors.patch"
   fi
@@ -104,8 +104,9 @@ if [ "$BUILD_SEABIOS" = 1 ]; then
     # fixed version string instead of "<git>-dirty-<date>-<hostname>-prebuilt.qemu.org"
     sed -i "s/    write_version(outfile, ver + options.extra, toolstr)/    write_version(outfile, '$SEABIOS_VERSION', toolstr)/" scripts/buildversion.py
     grep -q "'$SEABIOS_VERSION'" scripts/buildversion.py
-    [ "$STRONG_FW_CFG" = 1 ] && bash "$KIT/seabios/strong-fw-cfg.sh"
-    [ "$STRONG_HOST_BRIDGE" = 1 ] && bash "$KIT/seabios/strong-host-bridge.sh" )
+    if [ "$STRONG_FW_CFG" = 1 ]; then bash "$KIT/seabios/strong-fw-cfg.sh"; fi
+    if [ "$STRONG_HOST_BRIDGE" = 1 ]; then bash "$KIT/seabios/strong-host-bridge.sh"; fi
+  )
   ( cd "$Q/roms/seabios" && git diff ) > "$OUT/seabios-applied.diff"
   make -C "$Q/roms" bios FIRMWARE_EXTRAVERSION=
   make -C "$Q/roms" clean >/dev/null 2>&1 || true
