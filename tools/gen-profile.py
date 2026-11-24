@@ -306,6 +306,7 @@ def main():
     ap.add_argument("--host-cpu-model", help=argparse.SUPPRESS)
     ap.add_argument("--socket", help="physical host socket; default: dmidecode")
     ap.add_argument("--seed", type=int)
+    ap.add_argument("--vmid", help="stable VM identifier recorded in profile.conf")
     ap.add_argument("--out", default=".")
     ap.add_argument("--host-sensors", type=int, choices=[0, 1], default=1)
     ap.add_argument("--host-vendor", choices=["auto", "intel", "amd", "unknown"], default="auto",
@@ -368,6 +369,8 @@ def main():
             if isinstance(value, (str, int)):
                 f.write(f"{key.upper()}={shlex.quote(str(value))}\n")
         f.write(f"CPU_ARGS={shlex.quote(args)}\n")
+    if a.vmid:
+        summary["vmid"] = a.vmid
     with open(jsonp, "w") as f:
         json.dump({"summary": summary, "env": env, "args": args}, f,
                   indent=2, sort_keys=True)
