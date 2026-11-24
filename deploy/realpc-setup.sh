@@ -33,13 +33,13 @@ CFG_YES=0                                 # 1: do not ask for confirmation
 CFG_KSRC=""                               # strong: matching kernel source tree
 CFG_MIN_FREE_MB=8192                      # strong: minimum free space in WORKDIR
 
-CFG_AML=(ssdt.aml ssdt-ec.aml hpet.aml wsmt.aml)
+CFG_AML=(ssdt.aml wsmt.aml)
 CFG_KERNEL_ASSET="realpc-kernel-tools.tar.gz"
 CFG_SOURCE_ASSET="SOURCE-COMMIT"
 
 # __AML__ becomes the ACPI directory; __CPUMODEL__ becomes the host CPU model.
 # host-sensors=on enables the open Intel host sensor implementation.
-CFG_ARGS_TEMPLATE='-acpitable file=__AML__/ssdt.aml -acpitable file=__AML__/ssdt-ec.aml -acpitable file=__AML__/hpet.aml -acpitable file=__AML__/wsmt.aml -cpu host,host-cache-info=on,hypervisor=off,vmware-cpuid-freq=false,enforce=false,host-phys-bits=true,pmu=on,host-sensors=on -device host-sensors -smbios type=0,vendor="American Megatrends International LLC.",version=H3.7G,date=02/21/2023,release=3.7 -smbios type=1,manufacturer="Maxsun",product="MS-Terminator B760M",version="VER:H3.7G" -smbios type=2,manufacturer="Maxsun",product="MS-Terminator B760M",version="VER:H3.7G" -smbios type=3,manufacturer="Default string",version="Default string" -smbios type=17,manufacturer=Kingston,part=KF432C16BB/16,serial=K4D4001001,asset=DIMM-A1,loc_pfx=DIMM,bank=ChannelA,speed=3200 -smbios type=4,manufacturer="Intel(R) Corporation",version="__CPUMODEL__"'
+CFG_ARGS_TEMPLATE='-acpitable file=__AML__/ssdt.aml -acpitable file=__AML__/wsmt.aml -cpu host,host-cache-info=on,hypervisor=off,vmware-cpuid-freq=false,enforce=false,host-phys-bits=true,pmu=on,host-sensors=on -device host-sensors -smbios type=0,vendor="American Megatrends International LLC.",version=H3.7G,date=02/21/2023,release=3.7 -smbios type=1,manufacturer="Maxsun",product="MS-Terminator B760M",version="VER:H3.7G" -smbios type=2,manufacturer="Maxsun",product="MS-Terminator B760M",version="VER:H3.7G" -smbios type=3,manufacturer="Default string",version="Default string" -smbios type=17,manufacturer=Kingston,part=KF432C16BB/16,serial=K4D4001001,asset=DIMM-A1,loc_pfx=DIMM,bank=ChannelA,speed=3200 -smbios type=4,manufacturer="Intel(R) Corporation",version="__CPUMODEL__"'
 
 # Complete connector and slot instances keep WMI CIM classes populated.
 port_types=(0x10 0x10 0x10 0x10 0x1D 0x1D 0x1F 0x1F 0x1C 0x1C 0x20 0x20)

@@ -7,8 +7,8 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 out=${1:?outdir}
 mkdir -p "$out"
-declare -A REV=( [ssdt]=20210930 [ssdt-battery]=20210930 [ssdt-ec]=20250404 [hpet]=20250404 )
-for t in ssdt ssdt-battery ssdt-ec hpet; do
+declare -A REV=( [ssdt]=20250404 [ssdt-battery]=20210930 )
+for t in ssdt ssdt-battery; do
   # iasl can return success after reporting ASL errors. Require an explicit successful compile.
   if ! iasl -p "$out/$t" "$here/$t.dsl" >"$out/$t.iasl.log" 2>&1 || \
      ! grep -q 'Compilation successful' "$out/$t.iasl.log"; then
@@ -26,6 +26,6 @@ b[9] = (-sum(b)) & 0xff                  # table checksum
 open(p, 'wb').write(b)
 EOF
 done
-( cd "$out" && sha256sum -c "$here/SHA256SUMS.author" ) || echo "NOTE: output differs from the author's tables (expected if you edited the .dsl files)"
+# The output is intentionally different from the historical author tables.
 
 python3 -I "$here/build-wsmt.py" "$out/wsmt.aml"

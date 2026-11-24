@@ -127,7 +127,14 @@ S 's/rev = 3/rev = 4/g' hw/i386/acpi-build.c # Most VMs use an older-style FADT 
 S 's/fadt.rev = 1/fadt.rev = 4/g' hw/i386/acpi-build.c # Most VMs use an older-style FADT of length 244  bytes (revision  3), cutting off before the Sleep Control/Status registers and Hypervisor ID
 S 's/if (f->rev <= 4) {/if (f->rev <= 6) {\n\t\tbuild_append_gas_from_struct(tbl, \&f->sleep_ctl);\n\t\tbuild_append_gas_from_struct(tbl, \&f->sleep_sts);/g' hw/acpi/aml-build.c # # Most VMs use an older-style FADT of length 244  bytes (revision  3), cutting off before the Sleep Control/Status registers and Hypervisor ID
 S 's/lat = 0xfff/lat = 0x1fff/g' hw/i386/acpi-build.c  # A value > 100 indicates the system does not support a C2/C3 state
-S 's/"WAET"/"WWWT"/g' hw/i386/acpi-build.c # "WAET" is also present as a string inside the WAET table, so there's no need to check for its table signature
+# Remove WAET generation entirely; renaming its signature only hides a marker.
+sed -i '/^    acpi_add_table(table_offsets, tables_blob);$/{N;/\n    build_waet(/d;}' hw/i386/acpi-build.c
+! grep -q '^    build_waet(' hw/i386/acpi-build.c || { echo "ERROR: WAET emission remains" >&2; FAILED=1; }
+# QEMU already builds one HPET device and one HPET table. Correct its OEM data
+# and valid periodic tick minimum; do not inject another HPET from an AML file.
+sed -i '/^build_hpet(/,/^}/ s/\.oem_id = oem_id, \.oem_table_id = oem_table_id };/                        .oem_id = "ALASKA", .oem_table_id = "A M I " };/' hw/i386/acpi-build.c
+grep -A4 '^build_hpet(' hw/i386/acpi-build.c | grep -q '.oem_id = "ALASKA", .oem_table_id = "A M I "' || { echo "ERROR: HPET OEM edit failed" >&2; FAILED=1; }
+S 's/build_append_int_noprefix(table_data, 0, 2);/build_append_int_noprefix(table_data, 0x80, 2);/g' hw/i386/acpi-build.c
 S 's/rev = 1/rev = 3/g' hw/i386/acpi-build.c # 全部升级最低为3
 S 's/dev = aml_device("PCI0");/aml_append(sb_scope, aml_name_decl("OSYS", aml_int(0x03E8)));\n\tAml *osi = aml_if(aml_equal(aml_call1("_OSI", aml_string("Windows 2012")), aml_int(1)));\n\taml_append(osi, aml_store(aml_int(0x07DC), aml_name("OSYS")));\n\taml_append(sb_scope, osi);\n\tosi = aml_if(aml_equal(aml_call1("_OSI",aml_string("Windows 2013")), aml_int(1)));\n\taml_append(osi, aml_store(aml_int(0x07DD), aml_name("OSYS")));\n\taml_append(sb_scope, osi);\n\tdev = aml_device("PCI0");/g' hw/i386/acpi-build.c # windows 2012 2013 _TZ_ _PTS dsdt
 #sed -i 's/0x0627/0x6666/g' hw/input/virtio-input-hid.c # 0x0627=QEMU tablet usb键鼠会有少量问题
