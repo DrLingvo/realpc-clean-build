@@ -55,6 +55,12 @@ args: snapshot-must-not-change
         self.assertIn(",version=RVT04B6Q,wwn=0x", result)
         self.assertIn("[snapshot]\nargs: snapshot-must-not-change\n", result)
         self.assertIn('version="' + HOST_CPU + '"', result)
+        topology = generated["summary"]["topology"]
+        self.assertIn(f"sockets: {topology['sockets']}", result)
+        self.assertIn(f"cores: {topology['cores']}", result)
+        self.assertIn(f"threads: {topology['threads']}", result)
+        self.assertIn("host-cache-info=on", result)
+        self.assertIn("vmware-cpuid-freq=false", result)
 
     def test_qemu_and_proxmox_ouis_are_rejected(self):
         for oui in ("52:54:00:01:02:03", "BC:24:11:01:02:03"):
@@ -77,6 +83,10 @@ args: snapshot-must-not-change
             VM.render(self.config, bad, self.sizes, "/acpi")
         with self.assertRaises(ValueError):
             VM.render(self.config, profile(), self.sizes, "/acpi", "-device pvpanic")
+        missing_topology = profile()
+        missing_topology["summary"].pop("topology")
+        with self.assertRaises(ValueError):
+            VM.render(self.config, missing_topology, self.sizes, "/acpi")
 
     def test_unknown_disk_size_fails_closed(self):
         with self.assertRaises(ValueError):

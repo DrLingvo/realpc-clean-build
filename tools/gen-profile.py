@@ -25,6 +25,8 @@ Platforms: intel_desktop_lga1700, intel_desktop_lga1200, amd_desktop_am5, amd_de
 import argparse
 import json
 import random
+import re
+import os
 import shlex
 import subprocess
 import sys
@@ -210,6 +212,52 @@ def detect_host_socket():
     return None
 
 
+def detect_host_topology():
+    result = subprocess.run(["lscpu", "-J"], check=True, capture_output=True, text=True,
+                            env={**os.environ, "LC_ALL": "C"})
+    fields = {item["field"]: item["data"] for item in json.loads(result.stdout)["lscpu"]}
+    names = {"sockets": "Socket(s):", "cores": "Core(s) per socket:",
+             "threads": "Thread(s) per core:"}
+    topology = {}
+    for key, name in names.items():
+        try:
+            topology[key] = int(fields[name])
+        except (KeyError, ValueError) as exc:
+            raise ValueError(f"cannot read host topology field {name}") from exc
+        if topology[key] < 1:
+            raise ValueError(f"invalid host topology field {name}")
+    return topology
+
+
+def cache_size_kb(value):
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)([KMG]?)", value)
+    if not match:
+        raise ValueError(f"unsupported cache size {value!r}")
+    scale = {"": 1 / 1024, "K": 1, "M": 1024, "G": 1024 * 1024}[match.group(2)]
+    size = float(match.group(1)) * scale
+    if size != int(size) or size < 1:
+        raise ValueError(f"cache size is not an integer KiB value: {value!r}")
+    return int(size)
+
+
+def detect_host_caches():
+    result = subprocess.run(
+        ["lscpu", "-C=NAME,ONE-SIZE,WAYS,TYPE,LEVEL"], check=True,
+        capture_output=True, text=True, env={**os.environ, "LC_ALL": "C"})
+    caches = []
+    for line in result.stdout.splitlines()[1:]:
+        fields = line.split()
+        if len(fields) != 5:
+            continue
+        name, size, ways, kind, level = fields
+        caches.append({"name": name, "size_kb": cache_size_kb(size), "ways": int(ways),
+                       "type": kind, "level": int(level)})
+    for level in (1, 2, 3):
+        if not any(cache["level"] == level for cache in caches):
+            raise ValueError(f"host cache level {level} is missing from lscpu")
+    return caches
+
+
 def gen(platform, kind, host_sensors, pmu=True, tsc_pin=False, host_vendor="unknown",
         cpu_source="host", host_cpu_model=None, cpu_model=None, chipset_map=None):
     p = PLATFORMS[platform]
@@ -229,6 +277,8 @@ def gen(platform, kind, host_sensors, pmu=True, tsc_pin=False, host_vendor="unkn
         cpu = cpu_model.strip() if cpu_model else random.choice(cpus)
         if not cpu or any(ord(c) < 32 for c in cpu):
             raise ValueError("model mode requires a printable, non-empty CPU SKU")
+    topology = detect_host_topology() if cpu_source == "host" else None
+    caches = detect_host_caches() if cpu_source == "host" else []
     records = (chipset_map or {}).get("records", [])
     mapped_boards = [(record, (record["board"]["manufacturer"], record["board"]["product"]))
                      for record in records
@@ -292,6 +342,7 @@ def gen(platform, kind, host_sensors, pmu=True, tsc_pin=False, host_vendor="unkn
     summary = {
         "platform": platform, "kind": kind, "cpu_source": cpu_source,
         "cpu": cpu, "host_vendor": host_vendor,
+        "topology": topology, "caches": caches,
         "board": f"{board_vendor} {board_model}", "socket": p["socket"],
         "memory": f"{mem_vendor} {mem_part} @ {speed} MT/s (type 0x{mem_type:02x}, {FF_NAME[mem_form]})",
         "bios": f"{bios_vendor} {bios_ver} ({bios_date})", "mac": mac, "uuid": sys_uuid,
@@ -381,6 +432,8 @@ def main():
         for key, value in summary.items():
             if isinstance(value, (str, int)):
                 f.write(f"{key.upper()}={shlex.quote(str(value))}\n")
+        f.write(f"TOPOLOGY_JSON={shlex.quote(json.dumps(summary['topology'], sort_keys=True))}\n")
+        f.write(f"CACHES_JSON={shlex.quote(json.dumps(summary['caches'], sort_keys=True))}\n")
         f.write(f"CPU_ARGS={shlex.quote(args)}\n")
     if a.vmid:
         summary["vmid"] = a.vmid

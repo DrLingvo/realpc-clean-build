@@ -553,7 +553,7 @@ mkdir -p "$contract/pve" "$contract/args.d/100" "$contract/assets/.bak"
   need_root(){ :; }; cpu_model(){ printf 'Test CPU'; }; cpu_vendor(){ printf intel; }
   YES=1; VMID=100
   for name in "${CFG_AML[@]}"; do printf '%s' "$name" > "$WORKDIR/$name"; done
-  tar -C "$ROOT/tools" -czf "$WORKDIR/$CFG_VM_TOOLS_ASSET" gen-profile.py disk_identity.py vm-config.py chipset_map.py
+  tar -C "$ROOT/tools" -czf "$WORKDIR/$CFG_VM_TOOLS_ASSET" gen-profile.py disk_identity.py vm-config.py chipset_map.py smbios_tables.py
   (cd "$WORKDIR" && sha256sum ./*.aml "$CFG_VM_TOOLS_ASSET" > SHA256SUMS)
   for id in 100 101; do
     python3 "$ROOT/tools/gen-profile.py" --platform intel_desktop_lga1200 \

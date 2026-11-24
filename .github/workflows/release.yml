@@ -117,7 +117,7 @@ jobs:
           # Normal releases use the same commit for everything. Installer-only releases
           # take host-side tools from main and reuse binaries only after the hash guard.
           tar -C source/kernel --exclude='./out' --exclude='./__pycache__' -czf rel/realpc-kernel-tools.tar.gz .
-          tar -C source/tools -czf rel/realpc-vm-tools.tar.gz gen-profile.py disk_identity.py vm-config.py chipset_map.py
+          tar -C source/tools -czf rel/realpc-vm-tools.tar.gz gen-profile.py disk_identity.py vm-config.py chipset_map.py smbios_tables.py
           cp source/deploy/realpc-setup.sh source/deploy/install-userspace.sh rel/
           printf '%s\n' "${{ steps.run.outputs.release_sha }}" > rel/SOURCE-COMMIT
           printf '%s\n' "${{ steps.run.outputs.artifact_sha }}" > rel/ARTIFACT-SOURCE-COMMIT

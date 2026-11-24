@@ -6,12 +6,16 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 
 HERE = Path(__file__).resolve().parent
 SPEC = importlib.util.spec_from_file_location("disk_identity", HERE / "disk_identity.py")
 DISK = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(DISK)
+SPEC = importlib.util.spec_from_file_location("smbios_tables", HERE / "smbios_tables.py")
+SMBIOS = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(SMBIOS)
 BAD_OUIS = {"52:54:00", "BC:24:11"}
 BAD_ARGS = ("virtio", "spice", "qemu-xhci", "pvpanic", "pcie-pci-bridge")
 
@@ -66,6 +70,10 @@ def render(text, profile, sizes, acpi_dir, fragment_args=""):
     cpu_arg = re.search(r'-smbios type=4,.*?version="([^"]+)"', profile["args"])
     if not cpu_arg or cpu_arg.group(1) != summary["cpu"]:
         raise ValueError("SMBIOS type 4 does not match the host CPU profile")
+    topology = summary.get("topology")
+    if not topology or any(not isinstance(topology.get(key), int) or topology[key] < 1
+                           for key in ("sockets", "cores", "threads")):
+        raise ValueError("Strong-real profile requires observed host topology")
     if not current.get("net0"):
         raise ValueError("net0 is required so the generated coherent MAC can be applied")
 
@@ -106,13 +114,18 @@ def render(text, profile, sizes, acpi_dir, fragment_args=""):
     put(main, "agent", "0")
     put(main, "balloon", "0")
     put(main, "cpu", "host")
-    put(main, "sockets", "1")
+    put(main, "sockets", str(topology["sockets"]))
+    put(main, "cores", str(topology["cores"]))
+    put(main, "threads", str(topology["threads"]))
+    put(main, "vcpus", None)
     put(main, "scsihw", None)
     put(main, "smbios1", "uuid=" + summary["uuid"])
     if not any(re.match(r"hostpci\d+:", line) and "00:02.0" in line for line in main):
         put(main, "vga", "std")
 
     args = profile["args"]
+    for path in summary.get("smbios_files", []):
+        args += " -smbios file=" + shlex.quote(path)
     if summary["host_vendor"] == "intel":
         args += " -device host-sensors"
     args += " " + " ".join(disk_args)
@@ -140,6 +153,7 @@ def main_cli():
     main, _ = split_main(text)
     sizes = json.loads(Path(args.sizes).read_text()) if args.sizes else collect_sizes(main)
     profile = json.loads(Path(args.profile).read_text())
+    SMBIOS.write_cache_records(profile, Path(args.profile).parent)
     result = render(text, profile, sizes, args.acpi_dir, args.fragment_args)
     Path(args.out).write_text(result)
 

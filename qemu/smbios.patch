@@ -1,31 +1,15 @@
-diff -urN a/hw/smbios/smbios.c b/hw/smbios/smbios.c
---- a/hw/smbios/smbios.c
-+++ b/hw/smbios/smbios.c
-@@ -556,6 +556,193 @@
+--- a/hw/smbios/smbios.c	2026-11-25 02:19:06.604318669 +0800
++++ b/hw/smbios/smbios.c	2026-11-25 02:19:06.623416006 +0800
+@@ -556,6 +556,159 @@
  #define T9_BASE 0x900
  #define T11_BASE 0xe00
 
 +#define T8_BASE 0x800
-+#define T7_BASE 0x700
 +#define T26_BASE 0x1A00
 +#define T27_BASE 0x1B00
 +#define T28_BASE 0x1C00
 +#define T29_BASE 0x1D00
 +#define T39_BASE 0x2700
-+
-+struct smbios_type_7 {
-+    struct smbios_structure_header header;
-+    uint8_t socket_designation;
-+    uint16_t cache_configuration;
-+    uint16_t max_cache_size;
-+    uint16_t installed_size;
-+    uint16_t supported_sram_type;
-+    uint16_t current_sram_type;
-+    uint8_t cache_speed;
-+    uint8_t error_correction;
-+    uint8_t system_cache_type;
-+    uint8_t associativity;
-+} QEMU_PACKED;
 +
 +struct smbios_type_26 {
 +    struct smbios_structure_header header;
@@ -92,25 +76,6 @@ diff -urN a/hw/smbios/smbios.c b/hw/smbios/smbios.c
 +    uint16_t cooling_device_handle;
 +    uint16_t input_current_probe_handle;
 +} QEMU_PACKED;
-+
-+static void smbios_build_type_7_table(unsigned instance, const char *designation,
-+                                      uint16_t configuration, uint16_t size_kb,
-+                                      uint8_t correction, uint8_t cache_type,
-+                                      uint8_t associativity)
-+{
-+    SMBIOS_BUILD_TABLE_PRE(7, T7_BASE + instance, true);
-+    SMBIOS_TABLE_SET_STR(7, socket_designation, designation);
-+    t->cache_configuration = cpu_to_le16(configuration);
-+    t->max_cache_size = cpu_to_le16(size_kb);
-+    t->installed_size = cpu_to_le16(size_kb);
-+    t->supported_sram_type = cpu_to_le16(0x20);
-+    t->current_sram_type = cpu_to_le16(0x20);
-+    t->cache_speed = 0;
-+    t->error_correction = correction;
-+    t->system_cache_type = cache_type;
-+    t->associativity = associativity;
-+    SMBIOS_BUILD_TABLE_POST;
-+}
 +
 +static void smbios_build_type_26_table(unsigned instance, const char *description,
 +                                       uint8_t location_and_status)
@@ -195,23 +160,7 @@ diff -urN a/hw/smbios/smbios.c b/hw/smbios/smbios.c
  #define T16_BASE 0x1000
  #define T17_BASE 0x1100
  #define T19_BASE 0x1300
-@@ -1129,6 +1316,15 @@
-         }
-     }
-
-+	unsigned cores_per_socket = machine_topo_get_cores_per_socket(ms);
-+	smbios_build_type_7_table(0, "L1 Data Cache", 0x180,
-+	                          cores_per_socket * 0x20, 0x04, 0x04, 0x07);
-+	smbios_build_type_7_table(1, "L1 Instruction Cache", 0x180,
-+	                          cores_per_socket * 0x20, 0x04, 0x03, 0x07);
-+	smbios_build_type_7_table(2, "L2 Cache", 0x181,
-+	                          cores_per_socket * 0x200, 0x05, 0x05, 0x08);
-+	smbios_build_type_7_table(3, "L3 Cache", 0x182,
-+	                          0x4000, 0x06, 0x05, 0x08);
-     smbios_build_type_8_table();
-     smbios_build_type_9_table(errp);
-     smbios_build_type_11_table();
-@@ -1167,6 +1363,14 @@
+@@ -1167,6 +1320,14 @@
       */
      assert((mem_array_size + offset) < (T32_BASE - T19_BASE));
 
