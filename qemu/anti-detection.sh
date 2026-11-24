@@ -7,7 +7,7 @@
 #  - edits that were silent no-ops on QEMU 11 re-targeted to the new code locations
 # Run from the top of the QEMU source tree. Config comes from ../config.env.
 set -euo pipefail
-: "${brand:?}" "${IDE_SERIAL_PREFIX:?}" "${IDE_FW_REV:?}" "${SCSI_FW_REV:?}" "${POH:?}" "${PCC:?}" \
+: "${brand:?}" "${IDE_FW_REV:?}" "${SCSI_FW_REV:?}" "${POH:?}" "${PCC:?}" \
   "${SAS_ADDR:?}" "${USB_HUB_SERIAL:?}" "${USB_NET_MAC:?}" "${SMBIOS_T1_VERSION:?}"
 POH_LO=$(printf '0x%02x' $((POH & 0xff)));  POH_HI=$(printf '0x%02x' $((POH >> 8 & 0xff)))
 PCC_LO=$(printf '0x%02x' $((PCC & 0xff)));  PCC_HI=$(printf '0x%02x' $((PCC >> 8 & 0xff)))
@@ -55,9 +55,6 @@ S 's/Standard PC (Q35 + ICH9, 2009)/'${brand}' M4A88TD-Mq35/g' hw/i386/pc_q35.c
 S 's/"QEMU/"'${brand}'/g' hw/ide/atapi.c
 S 's/"QEMU/"'${brand}'/g' hw/ide/core.c
 #sed -i 's/QM%05d/'${brand}'-aiiaicodo666-%02d/g' hw/ide/core.c  #ide sata硬盘序列号drive_serial_str 20字符大小 这个是固定硬盘序列号方法，下面三行是硬盘随机序列号方法
-S 's/#include "trace.h"/#include "trace.h"\n#include <stdio.h>/g' hw/ide/core.c  #为下面一行使用随机函数rand()增加所依赖的头文件
-S 's/if (dev->serial)/srand(time(NULL));\n\tif (dev->serial)/g' hw/ide/core.c  ##为下面一行使用随机函数rand()增加用于伪随机数生成算法播种srand(time(NULL)); 不加无法随机
-S 's/QM%05d", s->drive_serial/'${IDE_SERIAL_PREFIX}'%06d", rand()%1000000/g' hw/ide/core.c  #ide sata硬盘序列号drive_serial_str 20字符大小
 S 's/0x09, 0x03, 0x00, 0x64, 0x64, 0x01, 0x00/0x09, 0x03, 0x00, 0x64, 0x64, '${POH_LO}', '${POH_HI}'/g' hw/ide/core.c  # SMART power-on hours (configurable)
 S 's/0x0c, 0x03, 0x00, 0x64, 0x64, 0x00, 0x00/0x0c, 0x03, 0x00, 0x64, 0x64, '${PCC_LO}', '${PCC_HI}'/g' hw/ide/core.c  # SMART power-cycle count (configurable)
 S 's/"QEMU/"'${brand}'/g' hw/input/adb-kbd.c

@@ -236,8 +236,6 @@ def gen(platform, kind, host_sensors, pmu=True, tsc_pin=False, host_vendor="unkn
     asset17 = rnd_digits(10)
     board_serial = rnd_alnum(10)
     sys_uuid = str(uuid.UUID(int=random.getrandbits(128), version=4))
-    # disk serial prefix styled after a real drive family (SSD/NVMe)
-    ide_prefix = random.choice(["S4EVNF0N", "S6Z1NG0T", "50026B7", "Z9ANESAM"])[:6] + rnd_alnum(2)
     oui = random.choice(p["oui"])
     mac = oui + ":" + ":".join(rnd_hex(2) for _ in range(3))
     bios_ver = f"{random.randint(1,3)}.{random.randint(10,80)}"
@@ -257,7 +255,6 @@ def gen(platform, kind, host_sensors, pmu=True, tsc_pin=False, host_vendor="unkn
         "MEM_VMAX": str(mem_volt),
         "MEM_VCFG": str(mem_volt),
         "CPU_SOCKET": p["socket"],
-        "IDE_SERIAL_PREFIX": ide_prefix,
         "SUBSYS_VENDOR_HEX": f"0x{SUBSYS_VENDOR.get(board_vendor, 0x1043):04x}",
         "SUBSYS_DEVICE_HEX": f"0x{random.randint(0x8000, 0x8fff):04x}",
     }
