@@ -123,8 +123,11 @@ S 's/fadt.rev = 1/fadt.rev = 4/g' hw/i386/acpi-build.c # Most VMs use an older-s
 S 's/if (f->rev <= 4) {/if (f->rev <= 6) {\n\t\tbuild_append_gas_from_struct(tbl, \&f->sleep_ctl);\n\t\tbuild_append_gas_from_struct(tbl, \&f->sleep_sts);/g' hw/acpi/aml-build.c # # Most VMs use an older-style FADT of length 244  bytes (revision  3), cutting off before the Sleep Control/Status registers and Hypervisor ID
 S 's/lat = 0xfff/lat = 0x1fff/g' hw/i386/acpi-build.c  # A value > 100 indicates the system does not support a C2/C3 state
 # Remove WAET generation entirely; renaming its signature only hides a marker.
+# Delete the definition too: QEMU uses -Werror=unused-function.
 sed -i '/^    acpi_add_table(table_offsets, tables_blob);$/{N;/\n    build_waet(/d;}' hw/i386/acpi-build.c
-! grep -q '^    build_waet(' hw/i386/acpi-build.c || { echo "ERROR: WAET emission remains" >&2; FAILED=1; }
+sed -i '/^static void$/{N;s/^static void\nbuild_waet(/build_waet(/;}' hw/i386/acpi-build.c
+sed -i '/^build_waet(/,/^}/d' hw/i386/acpi-build.c
+! grep -q 'build_waet' hw/i386/acpi-build.c || { echo "ERROR: WAET code remains" >&2; FAILED=1; }
 # QEMU already builds one HPET device and one HPET table. Correct its OEM data
 # and valid periodic tick minimum; do not inject another HPET from an AML file.
 sed -i '/^build_hpet(/,/^}/ s/\.oem_id = oem_id, \.oem_table_id = oem_table_id };/                        .oem_id = "ALASKA", .oem_table_id = "A M I " };/' hw/i386/acpi-build.c
