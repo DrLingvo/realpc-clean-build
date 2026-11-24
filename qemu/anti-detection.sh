@@ -65,7 +65,6 @@ S 's/"QEMU Virtio/"'${brand}'/g' hw/input/virtio-input-hid.c
 S 's/QEMU M68K Virtual Machine/'${brand}' M68K Real Machine/g' hw/m68k/virt.c
 S 's/"QEMU/"'${brand}'/g' hw/misc/pvpanic-isa.c
 S 's/"QEMU/"'${brand}'/g' hw/nvme/ctrl.c
-S 's/0x51454d5520434647ULL/0x4155535520434647ULL/g' hw/nvram/fw_cfg.c
 S 's/"QEMU/"'${brand}'/g' hw/nvram/fw_cfg-acpi.c
 S 's/"QEMU/"'${brand}'/g' hw/pci-host/gpex.c
 S 's/"QEMU/"'${brand}'/g' hw/ppc/prep.c
@@ -104,10 +103,7 @@ S 's/"QEMU/"'${brand}'/g' hw/usb/u2f-passthru.c
 S 's/"QEMU/"'${brand}'/g' hw/usb/u2f.c
 S 's/"BOCHS/"INTEL/g' include/hw/acpi/aml-build.h
 S 's/"BXPC/"PC8086/g' include/hw/acpi/aml-build.h
-S 's/"QEMU0002/"'${brand}'0002/g' include/standard-headers/linux/qemu_fw_cfg.h
-S 's/0x51454d5520434647ULL/0x4155535520434647ULL/g' include/standard-headers/linux/qemu_fw_cfg.h
 S 's/"QEMU/"'${brand}'/g' migration/rdma.c
-S 's/0x51454d5520434647ULL/0x4155535520434647ULL/g' pc-bios/optionrom/optionrom.h
 S 's/"QEMU/"'${brand}'/g' pc-bios/s390-ccw/virtio-scsi.h
 S 's/KVMKVMKVM\\0\\0\\0/\\1\\0\\0\\0\\0\\0\\0\\0\\0\\0\\0\\0/g' target/i386/kvm/kvm.c
 S 's/QEMUQEMUQEMUQEMU/ASUSASUSASUSASUS/g' target/s390x/tcg/misc_helper.c
