@@ -61,8 +61,10 @@ PY
 mapfile -t qtest_identity < /tmp/realpc-qtest-identity
 
 echo "=== fw_cfg and PCI dump (qtest, no guest code)"
-python3 -I tests/fwcfg_dump.py /tmp/fw -- qemu-system-x86_64 -accel qtest -machine q35 \
-  -m 32768 -smp "${qtest_identity[1]}" -display none -nodefaults -qtest stdio \
+python3 -I tests/fwcfg_dump.py /tmp/fw -- qemu-system-x86_64 -accel qtest \
+  -machine q35,memory-backend=qtest-ram -m 32768 \
+  -object memory-backend-ram,id=qtest-ram,size=32768M,reserve=false \
+  -smp "${qtest_identity[1]}" -display none -nodefaults -qtest stdio \
   "${vm_args[@]}" -device "e1000e,id=net0,mac=${qtest_identity[0]}"
 
 echo "=== host sensor I/O registers"
