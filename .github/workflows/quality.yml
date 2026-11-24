@@ -32,6 +32,18 @@ jobs:
           python3 -m unittest -v tests/timing_tests/test_analyze.py
           bash tests/test_setup.sh
 
+      - name: Strong kernel source fallback
+        run: |
+          script=kernel/build-kvm.sh
+          grep -F 'd4439e71d7865ecaa01a48033f96ff8ac1df16f8' "$script"
+          grep -F '660d1f05673c4e02cc3c2c056afc0dc14c0075f0' "$script"
+          grep -F 'ls-tree HEAD submodules/ubuntu-kernel' "$script"
+          grep -F 'patch --batch -p1 -d "$prepared"' "$script"
+          grep -F 'export LOCALVERSION=' "$script"
+          grep -F -- '--disable LOCALVERSION_AUTO' "$script"
+          grep -F 'maxdepth 6' "$script"
+          ! grep -E 'git.*(main|master)' "$script"
+
       - name: Build timing tests with strict warnings
         run: |
           make -C tests/timing_tests clean
