@@ -23,7 +23,10 @@ Platforms: intel_desktop_lga1700, intel_desktop_lga1200, amd_desktop_am5, amd_de
            intel_laptop, server  (omit --platform to pick at random)
 """
 import argparse
+import json
 import random
+import shlex
+import subprocess
 import sys
 import uuid
 
@@ -180,13 +183,53 @@ def platform_vendor(platform):
     return "intel" if PLATFORMS[platform]["cpu_vendor"].startswith("Intel") else "amd"
 
 
-def gen(platform, kind, host_sensors, pmu=True, tsc_pin=False, host_vendor="unknown"):
+def detect_host_cpu_model(path="/proc/cpuinfo"):
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("model name") and ":" in line:
+                    return line.split(":", 1)[1].strip()
+    except OSError:
+        pass
+    return None
+
+
+def detect_host_socket():
+    """Read the physical socket from SMBIOS; never infer it from a CPU SKU."""
+    try:
+        result = subprocess.run(["dmidecode", "-t", "processor"], check=True,
+                                capture_output=True, text=True)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    for line in result.stdout.splitlines():
+        if line.strip().startswith("Socket Designation:"):
+            value = line.split(":", 1)[1].strip().upper().replace(" ", "")
+            aliases = {"LGA1151": "LGA1151", "LGA1200": "LGA1200",
+                       "LGA1700": "LGA1700", "LGA4189": "LGA4189",
+                       "SOCKETAM4": "AM4", "SOCKETAM5": "AM5"}
+            return aliases.get(value, value)
+    return None
+
+
+def gen(platform, kind, host_sensors, pmu=True, tsc_pin=False, host_vendor="unknown",
+        cpu_source="host", host_cpu_model=None, cpu_model=None):
     p = PLATFORMS[platform]
     if host_vendor != "unknown" and host_vendor != platform_vendor(platform):
         raise ValueError(f"platform {platform} does not match {host_vendor} host CPU")
+    if cpu_source not in ("host", "model"):
+        raise ValueError("cpu_source must be 'host' or 'model'")
     mem_type, mem_form, mem_volt, kits = MEM_CLASS[p["mem_class"]]
     cpus = p["cpus_gaming"] if kind == "gaming" else p["cpus_neutral"]
-    cpu = random.choice(cpus)
+    if cpu_source == "host":
+        if not host_cpu_model or not host_cpu_model.strip():
+            raise ValueError("Strong-real requires the exact host CPU model")
+        cpu = host_cpu_model.strip()
+        if cpu_model is not None:
+            raise ValueError("an arbitrary CPU model is forbidden when cpu_source=host")
+    else:
+        cpu = cpu_model.strip() if cpu_model else random.choice(cpus)
+        if not cpu or any(ord(c) < 32 for c in cpu):
+            raise ValueError("model mode requires a printable, non-empty CPU SKU")
     board_vendor, board_model = random.choice(p["boards"])
     mem_vendor, mem_part, speed = random.choice(kits)
     serial17 = rnd_hex(8)
@@ -243,7 +286,8 @@ def gen(platform, kind, host_sensors, pmu=True, tsc_pin=False, host_vendor="unkn
         "-smbios type=9 -smbios type=8"
     )
     summary = {
-        "platform": platform, "kind": kind, "cpu": cpu, "host_vendor": host_vendor,
+        "platform": platform, "kind": kind, "cpu_source": cpu_source,
+        "cpu": cpu, "host_vendor": host_vendor,
         "board": f"{board_vendor} {board_model}", "socket": p["socket"],
         "memory": f"{mem_vendor} {mem_part} @ {speed} MT/s (type 0x{mem_type:02x}, {FF_NAME[mem_form]})",
         "bios": f"{bios_vendor} {bios_ver} ({bios_date})", "mac": mac, "uuid": sys_uuid,
@@ -259,6 +303,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--platform", choices=list(PLATFORMS))
     ap.add_argument("--kind", choices=["gaming", "neutral"], default="neutral")
+    ap.add_argument("--cpu-source", choices=["host", "model"], default="host",
+                    help="host: exact host CPU identity; model: Strong-skin skeleton")
+    ap.add_argument("--cpu-model", help="SKU for --cpu-source model; forbidden in host mode")
+    ap.add_argument("--host-cpu-model", help=argparse.SUPPRESS)
+    ap.add_argument("--socket", help="physical host socket; default: dmidecode")
     ap.add_argument("--seed", type=int)
     ap.add_argument("--out", default=".")
     ap.add_argument("--host-sensors", type=int, choices=[0, 1], default=1)
@@ -281,21 +330,34 @@ def main():
     if a.seed is not None:
         random.seed(a.seed)
     host_vendor = detect_host_vendor() if a.host_vendor == "auto" else a.host_vendor
+    host_cpu_model = (a.host_cpu_model or detect_host_cpu_model()
+                      if a.cpu_source == "host" else None)
     if host_vendor == "unknown" and not a.platform:
         ap.error("cannot detect the host CPU vendor; specify --platform and --host-vendor explicitly")
+    if a.cpu_source == "host" and not host_cpu_model:
+        ap.error("cannot read the host CPU model from /proc/cpuinfo")
+    socket = a.socket or (detect_host_socket() if a.cpu_source == "host" else None)
     compatible = [name for name in PLATFORMS
-                  if host_vendor == "unknown" or platform_vendor(name) == host_vendor]
+                  if (host_vendor == "unknown" or platform_vendor(name) == host_vendor)
+                  and (not socket or PLATFORMS[name]["socket"].upper() == socket.upper())]
+    if not compatible:
+        ap.error(f"no platform matches host vendor {host_vendor} and socket {socket or 'unknown'}")
+    if not a.platform and a.cpu_source == "host" and not socket:
+        ap.error("cannot detect the host socket; pass --socket explicitly (do not guess it)")
     platform = a.platform or random.choice(compatible)
     if platform not in compatible:
-        ap.error(f"platform {platform} does not match the real {host_vendor} host CPU")
+        ap.error(f"platform {platform} does not match host vendor {host_vendor} and socket {socket or 'unknown'}")
     env, args, summary, (mem_type, mem_form), tsc_pinned = gen(
         platform, a.kind, a.host_sensors, pmu=bool(a.pmu), tsc_pin=bool(a.tsc_pin),
-        host_vendor=host_vendor)
+        host_vendor=host_vendor, cpu_source=a.cpu_source,
+        host_cpu_model=host_cpu_model, cpu_model=a.cpu_model)
 
     import os
     os.makedirs(a.out, exist_ok=True)
     envp = os.path.join(a.out, "profile.env")
     argp = os.path.join(a.out, "profile.args")
+    confp = os.path.join(a.out, "profile.conf")
+    jsonp = os.path.join(a.out, "profile.json")
     with open(envp, "w") as f:
         f.write("# Build-time profile overrides. Merge into config.env and rebuild QEMU if the\n")
         f.write("# memory type/form factor below differ from your build, or to apply the subsystem\n")
@@ -304,11 +366,20 @@ def main():
             f.write(f'{k}="{v}"\n' if " " in v else f"{k}={v}\n")
     with open(argp, "w") as f:
         f.write("args: " + args + "\n")
+    with open(confp, "w") as f:
+        for key, value in summary.items():
+            if isinstance(value, (str, int)):
+                f.write(f"{key.upper()}={shlex.quote(str(value))}\n")
+        f.write(f"CPU_ARGS={shlex.quote(args)}\n")
+    with open(jsonp, "w") as f:
+        json.dump({"summary": summary, "env": env, "args": args}, f,
+                  indent=2, sort_keys=True)
+        f.write("\n")
 
-    print(f"Platform: {summary['platform']} ({summary['kind']})")
+    print(f"Platform: {summary['platform']} ({summary['kind']}, {a.cpu_source})")
     for key in ("host_vendor", "cpu", "board", "socket", "memory", "bios", "mac", "pmu", "tsc"):
         print(f"  {key:8s}: {summary[key]}")
-    print(f"\nwrote {envp} and {argp}")
+    print(f"\nwrote {envp}, {argp}, {confp} and {jsonp}")
     if tsc_pinned:
         print(
             "\n!! tsc-frequency is PINNED. Two requirements before you use this profile:\n"
