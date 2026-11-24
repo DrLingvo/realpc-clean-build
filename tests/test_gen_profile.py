@@ -72,6 +72,15 @@ class ProfileTest(unittest.TestCase):
         self.assertEqual(summary["memory_module_mb"], 16384)
         self.assertIn("uefi=on", args)
 
+    def test_smbios_commas_are_escaped_for_qemu_option_parser(self):
+        _, args, _, _, _ = MODULE.gen(
+            "intel_desktop_lga1200", "neutral", 0, host_vendor="intel",
+            host_cpu_model="Intel Host CPU, Unlocked")
+        self.assertIn('vendor="American Megatrends International,, LLC."', args)
+        self.assertIn('manufacturer="Micro-Star International Co.,, Ltd."', args)
+        self.assertIn('version="Intel Host CPU,, Unlocked"', args)
+        self.assertEqual(MODULE.qemu_opt("a,b"), "a,,b")
+
     def test_real_mode_never_accepts_an_arbitrary_sku(self):
         with self.assertRaises(ValueError):
             MODULE.gen("intel_desktop_lga1200", "neutral", 0, host_vendor="intel",

@@ -180,6 +180,11 @@ BOARD_BIOS = {
 }
 
 
+def qemu_opt(value):
+    """Escape a value for QEMU's comma-separated option parser."""
+    return str(value).replace(",", ",,")
+
+
 def rnd_hex(n):
     return "".join(random.choice("0123456789ABCDEF") for _ in range(n))
 
@@ -381,12 +386,12 @@ def gen(platform, kind, host_sensors, pmu=True, tsc_pin=False, host_vendor="unkn
     family = "Notebook" if p["chassis"] == 10 else ("Server" if p["chassis"] == 23 else "Desktop")
     args = (
         "-cpu " + ",".join(cpu_opts) + " "
-        f'-smbios type=0,vendor="{bios_vendor}",version="{bios_ver}",date={bios_date},release={bios_release},uefi=on '
-        f'-smbios type=1,manufacturer="{board_vendor}",product="{board_model}",version="1.0",serial={system_serial},uuid={sys_uuid},sku="{board_model}",family="{family}" '
-        f'-smbios type=2,manufacturer="{board_vendor}",product="{board_model}",version="1.0",serial={board_serial},asset={board_asset},location="System Board" '
-        f'-smbios type=3,manufacturer="{board_vendor}",type={p["chassis"]},version="1.0",serial={chassis_serial},asset={chassis_asset},sku="{board_model}" '
-        f'-smbios type=4,sock_pfx="{p["socket"]}",manufacturer="{p["cpu_vendor"]}",version="{cpu}",processor-id=0x{processor_id:08x} '
-        f'-smbios type=17,loc_pfx="DIMM",bank="BANK",manufacturer="{mem_vendor}",part="{mem_part}",speed={speed},serial={serial17},asset={asset17} '
+        f'-smbios type=0,vendor="{qemu_opt(bios_vendor)}",version="{qemu_opt(bios_ver)}",date={qemu_opt(bios_date)},release={qemu_opt(bios_release)},uefi=on '
+        f'-smbios type=1,manufacturer="{qemu_opt(board_vendor)}",product="{qemu_opt(board_model)}",version="1.0",serial={qemu_opt(system_serial)},uuid={sys_uuid},sku="{qemu_opt(board_model)}",family="{qemu_opt(family)}" '
+        f'-smbios type=2,manufacturer="{qemu_opt(board_vendor)}",product="{qemu_opt(board_model)}",version="1.0",serial={qemu_opt(board_serial)},asset={qemu_opt(board_asset)},location="System Board" '
+        f'-smbios type=3,manufacturer="{qemu_opt(board_vendor)}",type={p["chassis"]},version="1.0",serial={qemu_opt(chassis_serial)},asset={qemu_opt(chassis_asset)},sku="{qemu_opt(board_model)}" '
+        f'-smbios type=4,sock_pfx="{qemu_opt(p["socket"])}",manufacturer="{qemu_opt(p["cpu_vendor"])}",version="{qemu_opt(cpu)}",processor-id=0x{processor_id:08x} '
+        f'-smbios type=17,loc_pfx="DIMM",bank="BANK",manufacturer="{qemu_opt(mem_vendor)}",part="{qemu_opt(mem_part)}",speed={speed},serial={qemu_opt(serial17)},asset={qemu_opt(asset17)} '
         '-smbios type=41,designation="Onboard LAN",kind=ethernet,instance=1,pcidev=net0'
     )
     summary = {
