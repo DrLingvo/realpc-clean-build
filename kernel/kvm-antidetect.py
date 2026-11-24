@@ -112,8 +112,26 @@ else:
         src = src.rstrip() + '\n\nMODULE_INFO(realpc, "antidetect");\n'
 
 
-# 5. Clear the architectural hypervisor bit in leaf 1 when userspace installs the vCPU CPUID.
-# This runs during vCPU setup, not in the CPUID VM-exit path, and does not alter timing hooks.
+# 5. Make the architectural KVM MSRs unavailable. kvm_get_msr returning 1 injects #GP.
+# This is deliberately outside kvm_emulate_cpuid: the established timing path is unchanged.
+if "realpc_kvm_msr_gp" not in src:
+    signature = "static int kvm_get_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info)"
+    function_pos = src.find(signature)
+    if function_pos < 0:
+        raise SystemExit("Cannot find kvm_get_msr")
+    brace = src.find("{", function_pos + len(signature))
+    if brace < 0:
+        raise SystemExit("Cannot find kvm_get_msr body")
+    patch = """
+\t/* realpc_kvm_msr_gp: bare-metal RDMSR of KVM MSRs raises #GP. */
+\tif (msr_info->index >= 0x4b564d00 &&
+\t    msr_info->index <= 0x4b564d08)
+\t\treturn 1;
+"""
+    src = src[:brace + 1] + patch + src[brace + 1:]
+
+# 6. Clear the architectural hypervisor bit and KVM paravirt leaves when userspace installs
+# the vCPU CPUID. This runs during setup, not in the CPUID VM-exit/timing path.
 if "realpc_clear_hypervisor_bit" not in cpuid:
     signature = "void kvm_vcpu_after_set_cpuid(struct kvm_vcpu *vcpu)"
     function_pos = cpuid.find(signature)
@@ -127,6 +145,14 @@ if "realpc_clear_hypervisor_bit" not in cpuid:
 \tbest = kvm_find_cpuid_entry(vcpu, 1);
 \tif (best)
 \t\tbest->ecx &= ~BIT(31);
+
+\t/* realpc_hide_kvm_cpuid: no KVM signature or PV feature bits. */
+\tfor (i = 0; i < vcpu->arch.cpuid_nent; i++) {
+\t\tentry = &vcpu->arch.cpuid_entries[i];
+\t\tif (entry->function == KVM_CPUID_SIGNATURE ||
+\t\t    entry->function == KVM_CPUID_FEATURES)
+\t\t\tmemset(entry, 0, sizeof(*entry));
+\t}
 
 """
     cpuid = cpuid[:anchor_pos] + patch + cpuid[anchor_pos:]

@@ -521,11 +521,14 @@ cat > "$kdir/x86.c" <<'C'
 static int complete_hypercall_exit(struct kvm_vcpu *vcpu) { return 0; }
 int kvm_emulate_hypercall(struct kvm_vcpu *vcpu) { return 0; }
 static int emulator_fix_hypercall(struct x86_emulate_ctxt *ctxt) { return 0; }
+static int kvm_get_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info) { return 0; }
 C
 cat > "$kdir/cpuid.c" <<'C'
 void kvm_vcpu_after_set_cpuid(struct kvm_vcpu *vcpu)
 {
 	struct kvm_cpuid_entry2 *best;
+	struct kvm_cpuid_entry2 *entry;
+	int i;
 	memset(vcpu->arch.cpu_caps, 0, sizeof(vcpu->arch.cpu_caps));
 	kvm_update_cpuid_runtime(vcpu);
 }
