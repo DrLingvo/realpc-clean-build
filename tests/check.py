@@ -36,13 +36,12 @@ facp = acpi.find(b"FACP")
 check(facp >= 0 and acpi[facp + 45] == 1, "FADT preferred PM profile is desktop (1)")
 # EisaId() stores PNP IDs as little-endian compressed EISA values, not ASCII.
 pnp_ids = {
-    "PNP0C14": b"\x41\xd0\x0c\x14",
-    "PNP0C0C": b"\x41\xd0\x0c\x0c",
-    "PNP0C0E": b"\x41\xd0\x0c\x0e",
-    "PNP0D80": b"\x41\xd0\x0d\x80",
+    "PNP0C02": b"\x41\xd0\x0c\x02",  # HSEN motherboard resources
+    "PNP0C0B": b"\x41\xd0\x0c\x0b",  # ACPI fan devices
 }
+check(b"HSEN" in acpi, "ACPI contains the host-sensor device HSEN")
 for name, encoded in pnp_ids.items():
-    check(encoded in acpi, f"ACPI contains required power/sensor object {name}")
+    check(encoded in acpi, f"ACPI contains required sensor object {name}")
 for name in (b"_TMP", b"_FST"):
     check(name in acpi, f"ACPI contains required power/sensor object {name.decode()}")
 
