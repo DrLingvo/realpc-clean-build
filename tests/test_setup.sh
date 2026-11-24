@@ -562,6 +562,7 @@ mkdir -p "$contract/pve" "$contract/args.d/100" "$contract/assets/.bak"
   done
   cat > "$PVE_QEMU_DIR/100.conf" <<'CFG'
 name: contract
+memory: 16384
 net0: e1000=02:F0:5D:01:02:03,bridge=vmbr0
 vga: none
 hostpci0: 0000:00:02.0,pcie=1
@@ -582,6 +583,10 @@ CFG
   grep -q '^vga: none$' "$conf"
   grep -q '^hostpci0: 0000:00:02.0,pcie=1$' "$conf"
   grep -q '^CONTRACT_VERSION=1$' "$STATE"
+  grep -q -- '-smbios file=.*smbios39-psu.bin' "$conf"
+  ! grep -q -- 'smbios22-battery.bin' "$conf"
+  [[ -s "$WORKDIR/profiles/100/smbios39-psu.bin" ]]
+  [[ $(grep -o -- 'smbios7-[0-9].bin' "$conf" | wc -l) -ge 3 ]]
   [[ $(grep -c -- '-object early=1' "$conf") == 1 ]]
   [[ $(grep -c -- '-object vgpu=1' "$conf") == 1 ]]
   python3 - "$conf" <<'PY'
@@ -613,6 +618,7 @@ PY
   VMID=101
   cat > "$PVE_QEMU_DIR/101.conf" <<'CFG'
 name: ordinary
+memory: 16384
 net0: e1000=02:F0:5D:01:02:04,bridge=vmbr0
 vga: vmware
 CFG

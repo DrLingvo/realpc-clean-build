@@ -76,6 +76,13 @@ def render(text, profile, sizes, acpi_dir, fragment_args=""):
         raise ValueError("Strong-real profile requires observed host topology")
     if not current.get("net0"):
         raise ValueError("net0 is required so the generated coherent MAC can be applied")
+    try:
+        memory_mb = int(current["memory"])
+        module_mb = int(summary["memory_module_mb"])
+    except (KeyError, ValueError) as exc:
+        raise ValueError("memory and the profile DIMM module size are required") from exc
+    if memory_mb < module_mb or memory_mb % module_mb:
+        raise ValueError(f"memory must be a positive multiple of the {module_mb} MiB DIMM kit")
 
     for key, value in current.items():
         if re.fullmatch(r"net\d+", key):
@@ -153,7 +160,7 @@ def main_cli():
     main, _ = split_main(text)
     sizes = json.loads(Path(args.sizes).read_text()) if args.sizes else collect_sizes(main)
     profile = json.loads(Path(args.profile).read_text())
-    SMBIOS.write_cache_records(profile, Path(args.profile).parent)
+    SMBIOS.write_profile_records(profile, Path(args.profile).parent)
     result = render(text, profile, sizes, args.acpi_dir, args.fragment_args)
     Path(args.out).write_text(result)
 

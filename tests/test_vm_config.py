@@ -29,7 +29,8 @@ def profile():
 
 class VmConfigTest(unittest.TestCase):
     def setUp(self):
-        self.config = """cores: 8
+        self.config = """memory: 16384
+cores: 8
 net0: virtio=02:F0:5D:01:02:03,bridge=vmbr0
 virtio0: local:100/vm-100-disk-0.qcow2
 agent: 1
@@ -61,6 +62,9 @@ args: snapshot-must-not-change
         self.assertIn(f"threads: {topology['threads']}", result)
         self.assertIn("host-cache-info=on", result)
         self.assertIn("vmware-cpuid-freq=false", result)
+        self.assertIn("smbios1: uuid=" + generated["summary"]["uuid"], result)
+        self.assertIn("uuid=" + generated["summary"]["uuid"], result)
+        self.assertIn("pcidev=net0", result)
 
     def test_qemu_and_proxmox_ouis_are_rejected(self):
         for oui in ("52:54:00:01:02:03", "BC:24:11:01:02:03"):
@@ -91,6 +95,9 @@ args: snapshot-must-not-change
     def test_unknown_disk_size_fails_closed(self):
         with self.assertRaises(ValueError):
             VM.render(self.config, profile(), {}, "/acpi")
+        with self.assertRaises(ValueError):
+            VM.render(self.config.replace("memory: 16384", "memory: 8192"),
+                      profile(), self.sizes, "/acpi")
 
 
 if __name__ == "__main__":

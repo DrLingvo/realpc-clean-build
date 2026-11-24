@@ -1,6 +1,6 @@
 --- a/hw/smbios/smbios.c	2026-11-25 02:19:06.604318669 +0800
-+++ b/hw/smbios/smbios.c	2026-11-25 02:19:06.623416006 +0800
-@@ -556,6 +556,159 @@
++++ b/hw/smbios/smbios.c	2026-11-25 02:29:08.014755090 +0800
+@@ -556,6 +556,92 @@
  #define T9_BASE 0x900
  #define T11_BASE 0xe00
 
@@ -8,8 +8,6 @@
 +#define T26_BASE 0x1A00
 +#define T27_BASE 0x1B00
 +#define T28_BASE 0x1C00
-+#define T29_BASE 0x1D00
-+#define T39_BASE 0x2700
 +
 +struct smbios_type_26 {
 +    struct smbios_structure_header header;
@@ -45,36 +43,6 @@
 +    uint16_t accuracy;
 +    uint32_t OEM_defined;
 +    uint16_t nominal_value;
-+} QEMU_PACKED;
-+
-+struct smbios_type_29 {
-+    struct smbios_structure_header header;
-+    uint8_t description;
-+    uint8_t location_and_status;
-+    uint16_t maximum_value;
-+    uint16_t minimum_value;
-+    uint16_t resolution;
-+    uint16_t tolerance;
-+    uint16_t accuracy;
-+    uint32_t oem_defined;
-+    uint16_t nominal_value;
-+} QEMU_PACKED;
-+
-+struct smbios_type_39 {
-+    struct smbios_structure_header header;
-+    uint8_t power_unit_group;
-+    uint8_t location;
-+    uint8_t device_name;
-+    uint8_t manufacturer;
-+    uint8_t serial_number;
-+    uint8_t asset_tag_number;
-+    uint8_t model_part_number;
-+    uint8_t revision_level;
-+    uint16_t max_power_capacity;
-+    uint16_t power_supply_characteristics;
-+    uint16_t input_voltage_probe_handle;
-+    uint16_t cooling_device_handle;
-+    uint16_t input_current_probe_handle;
 +} QEMU_PACKED;
 +
 +static void smbios_build_type_26_table(unsigned instance, const char *description,
@@ -122,56 +90,48 @@
 +    SMBIOS_BUILD_TABLE_POST;
 +}
 +
-+static void smbios_build_type_29_table(unsigned instance, const char *description,
-+                                       uint8_t location_and_status)
-+{
-+    SMBIOS_BUILD_TABLE_PRE(29, T29_BASE + instance, true);
-+    SMBIOS_TABLE_SET_STR(29, description, description);
-+    t->location_and_status = location_and_status;
-+    t->maximum_value = cpu_to_le16(10000);
-+    t->minimum_value = cpu_to_le16(0);
-+    t->resolution = cpu_to_le16(10);
-+    t->tolerance = cpu_to_le16(100);
-+    t->accuracy = cpu_to_le16(100);
-+    t->oem_defined = 0;
-+    t->nominal_value = cpu_to_le16(2000);
-+    SMBIOS_BUILD_TABLE_POST;
-+}
-+
-+static void smbios_build_type_39_table(void)
-+{
-+    SMBIOS_BUILD_TABLE_PRE(39, T39_BASE, true);
-+    t->power_unit_group = 0;
-+    SMBIOS_TABLE_SET_STR(39, location, "Chassis rear");
-+    SMBIOS_TABLE_SET_STR(39, device_name, "Desktop PSU");
-+    SMBIOS_TABLE_SET_STR(39, manufacturer, "FSP Group");
-+    SMBIOS_TABLE_SET_STR(39, serial_number, "PSU0001001");
-+    SMBIOS_TABLE_SET_STR(39, asset_tag_number, "PSU-01");
-+    SMBIOS_TABLE_SET_STR(39, model_part_number, "FSP650-50EGN");
-+    SMBIOS_TABLE_SET_STR(39, revision_level, "1.0");
-+    t->max_power_capacity = cpu_to_le16(650);
-+    t->power_supply_characteristics = cpu_to_le16(0x19A2);
-+    t->input_voltage_probe_handle = cpu_to_le16(T26_BASE + 1);
-+    t->cooling_device_handle = cpu_to_le16(T27_BASE + 1);
-+    t->input_current_probe_handle = cpu_to_le16(T29_BASE);
-+    SMBIOS_BUILD_TABLE_POST;
-+}
-+
  #define T16_BASE 0x1000
  #define T17_BASE 0x1100
  #define T19_BASE 0x1300
-@@ -1167,6 +1320,14 @@
+@@ -875,6 +961,9 @@
+ static void smbios_build_type_17_table(unsigned instance, uint64_t size)
+ {
+     char loc_str[128];
++    char serial_str[128];
++    char asset_str[128];
++    char bank_str[128];
+     uint64_t size_mb;
+
+     SMBIOS_BUILD_TABLE_PRE(17, T17_BASE + instance, true); /* required */
+@@ -895,14 +984,17 @@
+     t->form_factor = 0x09; /* DIMM */
+     t->device_set = 0; /* Not in a set */
+     snprintf(loc_str, sizeof(loc_str), "%s %d", type17.loc_pfx, instance);
++    snprintf(serial_str, sizeof(serial_str), "%s-%02X", type17.serial, instance);
++    snprintf(asset_str, sizeof(asset_str), "%s-%02X", type17.asset, instance);
++    snprintf(bank_str, sizeof(bank_str), "%s %d", type17.bank, instance);
+     SMBIOS_TABLE_SET_STR(17, device_locator_str, loc_str);
+-    SMBIOS_TABLE_SET_STR(17, bank_locator_str, type17.bank);
++    SMBIOS_TABLE_SET_STR(17, bank_locator_str, bank_str);
+     t->memory_type = 0x07; /* RAM */
+     t->type_detail = cpu_to_le16(0x02); /* Other */
+     t->speed = cpu_to_le16(type17.speed);
+     SMBIOS_TABLE_SET_STR(17, manufacturer_str, type17.manufacturer);
+-    SMBIOS_TABLE_SET_STR(17, serial_number_str, type17.serial);
+-    SMBIOS_TABLE_SET_STR(17, asset_tag_number_str, type17.asset);
++    SMBIOS_TABLE_SET_STR(17, serial_number_str, serial_str);
++    SMBIOS_TABLE_SET_STR(17, asset_tag_number_str, asset_str);
+     SMBIOS_TABLE_SET_STR(17, part_number_str, type17.part);
+     t->attributes = 0; /* Unknown */
+     t->configured_clock_speed = t->speed; /* reuse value for max speed */
+@@ -1167,6 +1259,10 @@
       */
      assert((mem_array_size + offset) < (T32_BASE - T19_BASE));
 
 +	smbios_build_type_26_table(0, "CPU Vcore", 0x63);
-+	smbios_build_type_26_table(1, "PSU Input Voltage", 0x6A);
 +	smbios_build_type_27_table(0, "CPU Fan", 0x63);
-+	smbios_build_type_27_table(1, "PSU Fan", 0x67);
 +	smbios_build_type_28_table(0, "CPU Temperature", 0x63);
 +	smbios_build_type_28_table(1, "System Temperature", 0x67);
-+	smbios_build_type_29_table(0, "PSU Input Current", 0x6A);
-+	smbios_build_type_39_table();
      smbios_build_type_32_table();
      smbios_build_type_38_table();
      smbios_build_type_41_table(errp);

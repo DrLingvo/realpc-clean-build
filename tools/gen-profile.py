@@ -156,6 +156,30 @@ PLATFORMS = {
     },
 }
 
+# Version, release date and numeric system-BIOS release are one board record, not independent
+# random strings. These are identity metadata only; firmware behavior is still OVMF/SeaBIOS.
+BOARD_BIOS = {
+    "PRO B760M-P": ("1.10", "01/18/2023", "1.10"),
+    "PRIME B760M-A": ("0402", "01/13/2023", "1.0"),
+    "B760M DS3H": ("F1", "01/06/2023", "1.0"),
+    "MS-Terminator B760M": ("1.0", "02/10/2023", "1.0"),
+    "PRIME B560M-A": ("0402", "03/19/2021", "1.0"),
+    "B560M PRO-VDH": ("1.00", "03/16/2021", "1.0"),
+    "B560M DS3H": ("F1", "03/15/2021", "1.0"),
+    "TUF GAMING B650-PLUS": ("0607", "01/20/2023", "1.0"),
+    "MAG B650 TOMAHAWK WIFI": ("1.10", "01/31/2023", "1.10"),
+    "B650 AORUS ELITE AX": ("F3", "01/12/2023", "1.0"),
+    "TUF GAMING B550-PLUS": ("2403", "03/17/2022", "1.0"),
+    "B550-A PRO": ("1.70", "03/11/2022", "1.70"),
+    "B550 AORUS ELITE V2": ("F14", "03/25/2022", "1.0"),
+    "20U9": ("N27ET38W (1.24)", "06/15/2022", "1.24"),
+    "0K3WPT": ("1.12.0", "05/20/2022", "1.12"),
+    "8A78": ("F.15", "04/22/2022", "1.15"),
+    "X12DPi-N6": ("1.2", "02/18/2022", "1.2"),
+    "0H5J3T": ("1.6.0", "03/04/2022", "1.6"),
+}
+
+
 def rnd_hex(n):
     return "".join(random.choice("0123456789ABCDEF") for _ in range(n))
 
@@ -193,6 +217,25 @@ def detect_host_cpu_model(path="/proc/cpuinfo"):
     except OSError:
         pass
     return None
+
+
+def detect_host_processor_id(path="/proc/cpuinfo"):
+    fields = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                if ":" in line:
+                    key, value = line.split(":", 1)
+                    if key.strip() in ("cpu family", "model", "stepping") and key.strip() not in fields:
+                        fields[key.strip()] = int(value.strip())
+    except (OSError, ValueError):
+        pass
+    if not all(key in fields for key in ("cpu family", "model", "stepping")):
+        raise ValueError("cannot derive host processor ID from /proc/cpuinfo")
+    family, model, stepping = fields["cpu family"], fields["model"], fields["stepping"]
+    extended_family = family - 15 if family == 15 else 0
+    return ((extended_family & 0xff) << 20) | ((model >> 4) << 16) | \
+           ((family & 0x0f) << 8) | ((model & 0x0f) << 4) | (stepping & 0x0f)
 
 
 def detect_host_socket():
@@ -290,15 +333,19 @@ def gen(platform, kind, host_sensors, pmu=True, tsc_pin=False, host_vendor="unkn
     serial17 = rnd_hex(8)
     asset17 = rnd_digits(10)
     board_serial = rnd_alnum(10)
+    system_serial = rnd_alnum(12)
+    chassis_serial = rnd_alnum(12)
+    board_asset = rnd_alnum(8)
+    chassis_asset = rnd_alnum(8)
     sys_uuid = str(uuid.UUID(int=random.getrandbits(128), version=4))
     oui = random.choice(p["oui"])
     mac = oui + ":" + ":".join(rnd_hex(2) for _ in range(3))
-    bios_ver = f"{random.randint(1,3)}.{random.randint(10,80)}"
-    bios_date = f"{random.randint(1,12):02d}/{random.randint(1,28):02d}/{random.randint(2022,2024)}"
+    bios_ver, bios_date, bios_release = BOARD_BIOS[board_model]
     if p.get("bios_vendor_oem"):
-        bios_vendor = random.choice(p["bios_vendors"])
+        bios_vendor = {"LENOVO": "LENOVO", "Dell Inc.": "Dell Inc.", "HP": "HP"}[board_vendor]
     else:
         bios_vendor = p["bios_vendor"]
+    processor_id = detect_host_processor_id()
 
     env = {
         "MEM_TYPE_HEX": f"0x{mem_type:02x}",
@@ -309,6 +356,8 @@ def gen(platform, kind, host_sensors, pmu=True, tsc_pin=False, host_vendor="unkn
         "MEM_VMIN": str(mem_volt),
         "MEM_VMAX": str(mem_volt),
         "MEM_VCFG": str(mem_volt),
+        "MEM_ERROR_CORRECTION_HEX": "0x06" if p["mem_class"] == "ddr4_rdimm" else "0x03",
+        "MEM_TYPE_DETAIL_HEX": "0x0080" if p["mem_class"] == "ddr4_rdimm" else "0x0002",
         "CPU_SOCKET": p["socket"],
     }
     if chipset_record:
@@ -329,15 +378,16 @@ def gen(platform, kind, host_sensors, pmu=True, tsc_pin=False, host_vendor="unkn
         cpu_opts.append(f"tsc-frequency={tsc_hz}")
     if host_sensors and host_vendor == "intel":
         cpu_opts.append("host-sensors=on")
+    family = "Notebook" if p["chassis"] == 10 else ("Server" if p["chassis"] == 23 else "Desktop")
     args = (
         "-cpu " + ",".join(cpu_opts) + " "
-        f'-smbios type=0,vendor="{bios_vendor}",version={bios_ver},date={bios_date},release={bios_ver} '
-        f'-smbios type=1,manufacturer="{board_vendor}",product="{board_model}",version="1.0",serial={board_serial},uuid={sys_uuid} '
-        f'-smbios type=2,manufacturer="{board_vendor}",product="{board_model}",version="1.0",serial={board_serial} '
-        f'-smbios type=3,manufacturer="{board_vendor}",type={p["chassis"]},version="1.0" '
-        f'-smbios type=4,manufacturer="{p["cpu_vendor"]}",version="{cpu}" '
-        f'-smbios type=17,manufacturer="{mem_vendor}",part="{mem_part}",speed={speed},serial={serial17},asset={asset17} '
-        "-smbios type=9 -smbios type=8"
+        f'-smbios type=0,vendor="{bios_vendor}",version="{bios_ver}",date={bios_date},release={bios_release},uefi=on '
+        f'-smbios type=1,manufacturer="{board_vendor}",product="{board_model}",version="1.0",serial={system_serial},uuid={sys_uuid},sku="{board_model}",family="{family}" '
+        f'-smbios type=2,manufacturer="{board_vendor}",product="{board_model}",version="1.0",serial={board_serial},asset={board_asset},location="System Board" '
+        f'-smbios type=3,manufacturer="{board_vendor}",type={p["chassis"]},version="1.0",serial={chassis_serial},asset={chassis_asset},sku="{board_model}" '
+        f'-smbios type=4,sock_pfx="{p["socket"]}",manufacturer="{p["cpu_vendor"]}",version="{cpu}",processor-id=0x{processor_id:08x} '
+        f'-smbios type=17,loc_pfx="DIMM",bank="BANK",manufacturer="{mem_vendor}",part="{mem_part}",speed={speed},serial={serial17},asset={asset17} '
+        '-smbios type=41,designation="Onboard LAN",kind=ethernet,instance=1,pcidev=net0'
     )
     summary = {
         "platform": platform, "kind": kind, "cpu_source": cpu_source,
@@ -346,6 +396,18 @@ def gen(platform, kind, host_sensors, pmu=True, tsc_pin=False, host_vendor="unkn
         "board": f"{board_vendor} {board_model}", "socket": p["socket"],
         "memory": f"{mem_vendor} {mem_part} @ {speed} MT/s (type 0x{mem_type:02x}, {FF_NAME[mem_form]})",
         "bios": f"{bios_vendor} {bios_ver} ({bios_date})", "mac": mac, "uuid": sys_uuid,
+        "bios_record": {"vendor": bios_vendor, "version": bios_ver,
+                        "date": bios_date, "release": bios_release},
+        "chassis_type": p["chassis"], "memory_module_mb": 16384,
+        "processor_id": f"0x{processor_id:08x}",
+        "psu": {"location": "Chassis rear", "name": "PSU 1", "manufacturer": "FSP Group",
+                "serial": "PSU" + rnd_alnum(9), "asset": "PSU-01",
+                "model": "FSP1000-50AGT" if p["chassis"] == 23 else "FSP650-50EGN",
+                "revision": "1.0", "capacity_w": 1000 if p["chassis"] == 23 else 650},
+        "battery": {"location": "System battery", "manufacturer": "SMP",
+                    "date": "03/15/2023", "serial": "BAT" + rnd_alnum(9),
+                    "name": board_model + " Battery", "capacity_mwh": 60000,
+                    "voltage_mv": 15400},
         "chipset": ("real-dump " + CHIPSET.board_key(chipset_record["board"])
                     if chipset_record else "unmapped; identity-only QEMU defaults"),
         "pmu": "on" if pmu else "off",

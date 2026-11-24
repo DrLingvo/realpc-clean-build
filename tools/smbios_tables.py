@@ -40,6 +40,43 @@ def cache_record(cache, instance):
     return formatted + designation + b"\0\0"
 
 
+def power_supply_record(psu):
+    strings = [psu["location"], psu["name"], psu["manufacturer"], psu["serial"],
+               psu["asset"], psu["model"], psu["revision"]]
+    formatted = struct.pack(
+        "<BBHBBBBBBBBHHHHH",
+        39, 22, 0x2700, 0, 1, 2, 3, 4, 5, 6, 7,
+        int(psu["capacity_w"]), 0x19A2, 0xFFFF, 0xFFFF, 0xFFFF,
+    )
+    return formatted + "\0".join(strings).encode("ascii") + b"\0\0"
+
+
+def battery_record(battery):
+    strings = [battery["location"], battery["manufacturer"], battery["date"],
+               battery["serial"], battery["name"], "1.1"]
+    formatted = struct.pack(
+        "<BBHBBBBBBHHBBHHBBI",
+        22, 26, 0x2200, 1, 2, 3, 4, 5, 0x06,
+        int(battery["capacity_mwh"]), int(battery["voltage_mv"]),
+        6, 0, 0, 0, 0, 1, 0,
+    )
+    return formatted + "\0".join(strings).encode("ascii") + b"\0\0"
+
+
+def write_chassis_record(profile, directory):
+    summary = profile["summary"]
+    chassis = int(summary["chassis_type"])
+    if chassis == 10:
+        record = battery_record(summary["battery"])
+        name = "smbios22-battery.bin"
+    else:
+        record = power_supply_record(summary["psu"])
+        name = "smbios39-psu.bin"
+    path = Path(directory) / name
+    path.write_bytes(record)
+    return str(path)
+
+
 def write_cache_records(profile, directory):
     caches = profile["summary"].get("caches")
     if not caches:
@@ -53,6 +90,13 @@ def write_cache_records(profile, directory):
     return paths
 
 
+def write_profile_records(profile, directory):
+    paths = write_cache_records(profile, directory)
+    paths.append(write_chassis_record(profile, directory))
+    profile["summary"]["smbios_files"] = paths
+    return paths
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser()
@@ -60,7 +104,7 @@ def main():
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
     profile = json.loads(Path(args.profile).read_text(encoding="utf-8"))
-    for path in write_cache_records(profile, args.out):
+    for path in write_profile_records(profile, args.out):
         print(path)
 
 

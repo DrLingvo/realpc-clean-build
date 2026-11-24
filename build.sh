@@ -75,9 +75,7 @@ Q=$WORK/pve-qemu/qemu
 log "Applying anti-detection edits to QEMU"
 ( cd "$Q"
   bash "$KIT/qemu/anti-detection.sh"
-  sed -e "s/@SMBIOS_PSU_NAME@/$SMBIOS_PSU_NAME/" \
-      -e "s/@SMBIOS_BATTERY_VENDOR@/$SMBIOS_BATTERY_VENDOR/" \
-      -e "s/@SMBIOS_BATTERY_SERIAL@/$SMBIOS_BATTERY_SERIAL/" "$KIT/qemu/smbios.patch" | patch -p1 --forward
+  patch -p1 --forward < "$KIT/qemu/smbios.patch"
   bash "$KIT/qemu/smbios-profile.sh"
   cp "$KIT/qemu/host-sensors-device.c" hw/misc/host-sensors.c
   grep -q "host-sensors.c" hw/misc/meson.build || \

@@ -52,9 +52,25 @@ class ProfileTest(unittest.TestCase):
                     platform, "gaming", 1, host_vendor=MODULE.platform_vendor(platform),
                     host_cpu_model="Exact Host CPU")
                 self.assertIn("-cpu host", args)
-                self.assertIn('type=4,manufacturer=', args)
+                self.assertRegex(args, r'-smbios type=4,[^\n]*manufacturer=')
                 self.assertIn('version="Exact Host CPU"', args)
                 self.assertIn("pmu=on", args)
+
+    def test_smbios_identity_is_board_and_chassis_coherent(self):
+        _, args, summary, _, _ = MODULE.gen(
+            "intel_desktop_lga1200", "neutral", 0, host_vendor="intel",
+            host_cpu_model="Intel Host CPU")
+        board_model = re.search(r'-smbios type=1,.*?product="([^"]+)"', args).group(1)
+        bios = summary["bios_record"]
+        self.assertEqual((bios["version"], bios["date"], bios["release"]),
+                         MODULE.BOARD_BIOS[board_model])
+        serials = re.findall(r"-smbios type=[123],[^\n]*?serial=([^\s,]+)", args)
+        self.assertEqual(len(serials), 3)
+        self.assertEqual(len(set(serials)), 3)
+        self.assertIn("pcidev=net0", args)
+        self.assertIn("processor-id=" + summary["processor_id"], args)
+        self.assertEqual(summary["memory_module_mb"], 16384)
+        self.assertIn("uefi=on", args)
 
     def test_real_mode_never_accepts_an_arbitrary_sku(self):
         with self.assertRaises(ValueError):
