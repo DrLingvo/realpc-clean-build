@@ -7,7 +7,7 @@ on:
       - '**.md'
       - 'profiles/**'
       - 'deploy/**'
-      - 'kernel/**'
+      # Kernel changes need the prebuilt Strong KVM artifact rebuilt.
       - 'LICENSE'
       - '.github/workflows/test.yml'
       - '.github/workflows/release.yml'
@@ -17,7 +17,7 @@ on:
       - '**.md'
       - 'profiles/**'
       - 'deploy/**'
-      - 'kernel/**'
+      # Kernel changes need the prebuilt Strong KVM artifact rebuilt.
       - 'LICENSE'
       - '.github/workflows/test.yml'
       - '.github/workflows/release.yml'
@@ -96,4 +96,40 @@ jobs:
             out/*.aml
             out/*.diff
             out/SHA256SUMS*
+          if-no-files-found: error
+
+  kvm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Free disk space on the runner
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/boost
+          sudo docker image prune -af >/dev/null
+          df -h /
+
+      - name: Build prebuilt KVM for the pinned Proxmox kernel
+        run: |
+          docker run --rm -v "$PWD":/kit -w /kit \
+            debian:trixie bash ci/container-kvm.sh
+
+      - name: Verify prebuilt KVM metadata and checksums
+        run: |
+          test -s out/kvm-7.0.14-6-pve.ko
+          test -s out/kvm-7.0.14-6-pve.modinfo
+          grep -F 'REALPC_CONFIG_SHA256=d7d7c2ae6b96aa04adfc16b1262269a951a0dd33a945eab4cf2fa6937469e5f7' \
+            out/kvm-7.0.14-6-pve.modinfo
+          grep -F 'REALPC_MODULE_SYMVERS_SHA256=0e39472916fa6286519fe1c8cd39740535f31140a1145e16f0e07fd62ed87f9d' \
+            out/kvm-7.0.14-6-pve.modinfo
+          (cd out && sha256sum -c SHA256SUMS.kvm)
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: out-kvm
+          path: |
+            out/kvm-*.ko
+            out/kvm-*.modinfo
+            out/SHA256SUMS.kvm
           if-no-files-found: error

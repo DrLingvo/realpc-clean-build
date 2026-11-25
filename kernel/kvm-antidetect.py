@@ -112,16 +112,25 @@ else:
         src = src.rstrip() + '\n\nMODULE_INFO(realpc, "antidetect");\n'
 
 
-# 5. Make the architectural KVM MSRs unavailable. kvm_get_msr returning 1 injects #GP.
+# 5. Make the architectural KVM MSRs unavailable. Returning 1 from the common MSR
+# handler injects #GP. Linux 7.0 renamed the old static kvm_get_msr handler to
+# kvm_get_msr_common; accept only these two exact definitions, never a fuzzy anchor.
 # This is deliberately outside kvm_emulate_cpuid: the established timing path is unchanged.
 if "realpc_kvm_msr_gp" not in src:
-    signature = "static int kvm_get_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info)"
-    function_pos = src.find(signature)
+    signatures = (
+        "int kvm_get_msr_common(struct kvm_vcpu *vcpu, struct msr_data *msr_info)",
+        "static int kvm_get_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info)",
+    )
+    function_pos = -1
+    for signature in signatures:
+        function_pos = src.find(signature)
+        if function_pos >= 0:
+            break
     if function_pos < 0:
-        raise SystemExit("Cannot find kvm_get_msr")
+        raise SystemExit("Cannot find kvm_get_msr_common or legacy kvm_get_msr")
     brace = src.find("{", function_pos + len(signature))
     if brace < 0:
-        raise SystemExit("Cannot find kvm_get_msr body")
+        raise SystemExit("Cannot find KVM MSR handler body")
     patch = """
 \t/* realpc_kvm_msr_gp: bare-metal RDMSR of KVM MSRs raises #GP. */
 \tif (msr_info->index >= 0x4b564d00 &&

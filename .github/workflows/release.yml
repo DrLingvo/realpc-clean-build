@@ -82,7 +82,17 @@ jobs:
             cd "$1"
             bash tools/source-hash.sh | awk '/^  / {
               sub(/^  /, "")
-              if ($2 !~ /^kernel\// && ($2 !~ /^tools\// || $2 == "tools/make-logo.py")) print
+              if ($2 !~ /^kernel\// && $2 != "ci/container-kvm.sh" && \
+                  ($2 !~ /^tools\// || $2 == "tools/make-logo.py")) print
+            }' | sha256sum | awk '{print $1}'
+          )
+          kernel_hash() (
+            set -euo pipefail
+            cd "$1"
+            bash tools/source-hash.sh | awk '/^  / {
+              sub(/^  /, "")
+              if ($2 ~ /^kernel\// || $2 == "ci/container-kvm.sh" || \
+                  $2 == ".github/workflows/build.yml") print
             }' | sha256sum | awk '{print $1}'
           )
           new_hash=$(userspace_hash source)
@@ -91,8 +101,16 @@ jobs:
             echo "Userspace recipes differ; installer-only reuse is forbidden" >&2
             exit 1
           }
+          new_kernel_hash=$(kernel_hash source)
+          old_kernel_hash=$(kernel_hash artifact-source)
+          [ -n "$new_kernel_hash" ] && [ "$new_kernel_hash" = "$old_kernel_hash" ] || {
+            echo "Kernel recipes differ; prebuilt KVM reuse is forbidden" >&2
+            exit 1
+          }
           echo "hash=$new_hash" >> "$GITHUB_OUTPUT"
+          echo "kernel_hash=$new_kernel_hash" >> "$GITHUB_OUTPUT"
           echo "Verified identical userspace recipe $new_hash"
+          echo "Verified identical prebuilt KVM recipe $new_kernel_hash"
 
       - uses: actions/download-artifact@v5
         with:
@@ -106,13 +124,17 @@ jobs:
           shopt -s nullglob
           qemu=(dist/pve-qemu-kvm_*_amd64.deb)
           ovmf=(dist/pve-edk2-firmware-ovmf_*_all.deb)
+          kvm=(dist/kvm-*.ko)
+          kvm_info=(dist/kvm-*.modinfo)
           [ "${#qemu[@]}" -eq 1 ] || { echo "Expected exactly one QEMU amd64 package" >&2; exit 1; }
           [ "${#ovmf[@]}" -eq 1 ] || { echo "Expected exactly one OVMF package" >&2; exit 1; }
+          [ "${#kvm[@]}" -eq 1 ] || { echo "Expected exactly one prebuilt KVM module" >&2; exit 1; }
+          [ "${#kvm_info[@]}" -eq 1 ] || { echo "Expected exactly one prebuilt KVM metadata file" >&2; exit 1; }
           for file in ssdt.aml wsmt.aml qemu-applied.diff edk2-applied.diff seabios-applied.diff; do
             [ -s "dist/$file" ] || { echo "Missing or empty required artifact: $file" >&2; exit 1; }
           done
           mkdir -p rel
-          cp "${qemu[@]}" "${ovmf[@]}" rel/
+          cp "${qemu[@]}" "${ovmf[@]}" "${kvm[@]}" "${kvm_info[@]}" rel/
           cp dist/ssdt.aml dist/wsmt.aml dist/*-applied.diff rel/
           # Normal releases use the same commit for everything. Installer-only releases
           # take host-side tools from main and reuse binaries only after the hash guard.
@@ -124,6 +146,7 @@ jobs:
           printf '%s\n' "${{ steps.run.outputs.artifact_sha }}" > rel/ARTIFACT-SOURCE-COMMIT
           if [ "${{ steps.run.outputs.installer_only }}" = true ]; then
             printf '%s\n' "${{ steps.recipe.outputs.hash }}" > rel/USERSPACE-RECIPE-SHA256
+            printf '%s\n' "${{ steps.recipe.outputs.kernel_hash }}" > rel/KVM-RECIPE-SHA256
           fi
           echo "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ steps.run.outputs.id }}" > rel/BUILD-RUN-URL
           ( cd rel && sha256sum ./* > SHA256SUMS )
@@ -158,8 +181,9 @@ jobs:
           directory (/root/realpc by default): it contains the rollback backups.
 
           host-sensors is available on Intel hosts and includes thermal/performance/RAPL MSRs.
-          The optional open Strong mode builds kvm.ko on the host for the exact running kernel;
-          it is experimental, affects every VM, and is not boot-tested by CI.
+          Strong defaults to a prebuilt kvm.ko only when kernelrelease, vermagic, config and
+          Module.symvers match the host. Unsupported kernels require the explicit --kvm-build
+          fallback. Strong is experimental, affects every VM, and CI artifacts are not boot tests.
 
           Detection limits remain: CPUID/VM-exit median latency is still visible on ordinary
           KVM. No release can promise full VM invisibility; run tests/timing_tests on the real

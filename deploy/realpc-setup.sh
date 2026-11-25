@@ -5,8 +5,8 @@
 #
 # Modes: check | normal | strong | update | configvm | rollback
 #   normal   Install QEMU with host-sensors, OVMF and ACPI files.
-#   strong   Install the userspace packages, then build and install the open
-#            kvm.ko on this host for the exact running kernel.
+#   strong   Install userspace and the open kvm.ko. Use a verified prebuilt module
+#            by default, or --kvm-build to build for the exact running kernel.
 #   update   Download a release and update the mode recorded by a previous
 #            successful normal/strong installation. VM configs are untouched.
 #   configvm Install ACPI files and replace the VM args line.
@@ -30,8 +30,9 @@ CFG_LOG="none"                            # none|normal|debug (file logging only
 CFG_LOGFILE=""                            # Empty: <script directory>/<script name>.log
 CFG_VMID=""                               # VM ID for configvm
 CFG_YES=0                                 # 1: do not ask for confirmation
-CFG_KSRC=""                               # strong: matching kernel source tree
-CFG_MIN_FREE_MB=8192                      # strong: minimum free space in WORKDIR
+CFG_KSRC=""                               # strong build: matching kernel source tree
+CFG_KVM_BUILD=0                           # strong: 0: prebuilt; 1: build on this host
+CFG_MIN_FREE_MB=8192                      # strong build: minimum free space in WORKDIR
 
 CFG_AML=(ssdt.aml wsmt.aml)
 CFG_KERNEL_ASSET="realpc-kernel-tools.tar.gz"
@@ -49,7 +50,7 @@ SELF_DIR="$(dirname "$SELF")"; SELF_NAME="$(basename "$SELF")"; SELF_NAME="${SEL
 
 REPO="$CFG_REPO"; MODE="$CFG_MODE"; RELEASE="$CFG_RELEASE"; WORKDIR="$CFG_WORKDIR"
 DOWNLOAD="$CFG_DOWNLOAD"; LOG="$CFG_LOG"; LOGFILE="$CFG_LOGFILE"; VMID="$CFG_VMID"
-YES="$CFG_YES"; CPU_MODEL=""; KSRC="$CFG_KSRC"
+YES="$CFG_YES"; CPU_MODEL=""; KSRC="$CFG_KSRC"; KVM_BUILD="$CFG_KVM_BUILD"
 
 usage(){
   cat <<'EOF'
@@ -64,7 +65,9 @@ Options:
   --logfile PATH    Log file path
   --vmid N          VM ID for configvm
   --cpu-model NAME  Override the CPU model written by configvm
-  --ksrc PATH       Kernel source tree matching the running kernel
+  --kvm-prebuilt    Use the release kvm.ko for the exact running kernel (default)
+  --kvm-build       Build kvm.ko on this host instead of using a prebuilt module
+  --ksrc PATH       Kernel source tree matching the running kernel; implies --kvm-build
   --yes, -y         Skip confirmation prompts
   -h, --help        Show this help
 
@@ -76,8 +79,9 @@ Later updates (the recorded normal/strong mode is preserved):
   bash realpc-setup.sh --mode update --yes
 
 Update never runs configvm and never rewrites a VM args line. A strong update
-rebuilds kvm.ko when the release or running kernel changes. An existing state
-file with INSTALL_MODE=normal or INSTALL_MODE=strong is required.
+installs kvm.ko when the release or running kernel changes. It uses a prebuilt
+module unless --kvm-build is explicit. An existing state file with
+INSTALL_MODE=normal or INSTALL_MODE=strong is required.
 EOF
 }
 
@@ -91,7 +95,9 @@ while [[ $# -gt 0 ]]; do
     --logfile) LOGFILE="${2:?missing value for --logfile}"; shift 2 ;;
     --vmid) VMID="${2:?missing value for --vmid}"; shift 2 ;;
     --cpu-model) CPU_MODEL="${2:?missing value for --cpu-model}"; shift 2 ;;
-    --ksrc) KSRC="${2:?missing value for --ksrc}"; shift 2 ;;
+    --kvm-prebuilt) KVM_BUILD=0; shift ;;
+    --kvm-build) KVM_BUILD=1; shift ;;
+    --ksrc) KSRC="${2:?missing value for --ksrc}"; KVM_BUILD=1; shift 2 ;;
     --yes|-y) YES=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
@@ -405,6 +411,9 @@ preserve_existing_packages(){
   done
 }
 
+prebuilt_kvm_asset(){ printf 'kvm-%s.ko' "$1"; }
+prebuilt_kvm_info_asset(){ printf 'kvm-%s.modinfo' "$1"; }
+
 fetch_assets(){
   local asset_mode=${1:-$MODE}
   mkdir -p "$WORKDIR" || die "Cannot create $WORKDIR"
@@ -458,6 +467,19 @@ PY
       u="$(pick "$urls" "/$CFG_KERNEL_ASSET\$")"
       [[ -n "$u" ]] || die "Release is missing $CFG_KERNEL_ASSET"
       dl "$u" "$WORKDIR/$CFG_KERNEL_ASSET"
+      if [[ "$KVM_BUILD" == 0 ]]; then
+        local rel kvm_asset kvm_info info_url
+        rel="$(uname -r)"; kvm_asset="$(prebuilt_kvm_asset "$rel")"
+        kvm_info="$(prebuilt_kvm_info_asset "$rel")"
+        rm -f "$WORKDIR/$kvm_asset" "$WORKDIR/$kvm_info"
+        u="$(pick "$urls" "/${kvm_asset//./\\.}\$")"
+        info_url="$(pick "$urls" "/${kvm_info//./\\.}\$")"
+        if [[ -n "$u" && -n "$info_url" ]]; then
+          dl "$u" "$WORKDIR/$kvm_asset"; dl "$info_url" "$WORKDIR/$kvm_info"
+        elif [[ -n "$u" || -n "$info_url" ]]; then
+          die "Release has an incomplete prebuilt KVM asset pair for $rel"
+        fi
+      fi
     fi
   else
     info "download=0: verifying existing files in $WORKDIR"
@@ -469,6 +491,15 @@ PY
   required=("$(basename "$q")" "$(basename "$o")" "$CFG_SOURCE_ASSET" "$CFG_VM_TOOLS_ASSET" "${CFG_AML[@]}")
   [[ "$asset_mode" == strong ]] && required+=("$CFG_KERNEL_ASSET")
   verify_assets "$WORKDIR" "${required[@]}" || die "Asset verification failed; no installation performed"
+  if [[ "$asset_mode" == strong && "$KVM_BUILD" == 0 ]]; then
+    local rel kvm_asset kvm_info
+    rel="$(uname -r)"; kvm_asset="$(prebuilt_kvm_asset "$rel")"
+    kvm_info="$(prebuilt_kvm_info_asset "$rel")"
+    if [[ -f "$WORKDIR/$kvm_asset" || -f "$WORKDIR/$kvm_info" ]]; then
+      verify_assets "$WORKDIR" "$kvm_asset" "$kvm_info" \
+        || die "Prebuilt KVM assets failed SHA-256 verification"
+    fi
+  fi
   RESOLVED_COMMIT="$(tr -d '[:space:]' < "$WORKDIR/$CFG_SOURCE_ASSET")"
   [[ "$RESOLVED_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]] || die "$CFG_SOURCE_ASSET does not contain a full commit SHA"
   ok "All required files passed SHA-256 verification"
@@ -637,10 +668,12 @@ strong_preflight(){
   run="$(awk '$3=="running"{print $1}' <<<"$qm_list" | tr '\n' ' ')"
   [[ -n "$run" ]] && die "Stop VMs ($run) and retry; kvm.ko is shared by the whole host"
   mkdir -p "$WORKDIR" || die "Cannot create $WORKDIR"
-  local free; free="$(df -Pk "$WORKDIR" | awk 'NR==2 {print $4}')"
-  [[ "$free" =~ ^[0-9]+$ ]] || die "Cannot determine free space in $WORKDIR"
-  (( free >= CFG_MIN_FREE_MB * 1024 )) \
-    || die "Strong build needs at least ${CFG_MIN_FREE_MB} MiB free in $WORKDIR"
+  if [[ "$KVM_BUILD" == 1 ]]; then
+    local free; free="$(df -Pk "$WORKDIR" | awk 'NR==2 {print $4}')"
+    [[ "$free" =~ ^[0-9]+$ ]] || die "Cannot determine free space in $WORKDIR"
+    (( free >= CFG_MIN_FREE_MB * 1024 )) \
+      || die "Strong build needs at least ${CFG_MIN_FREE_MB} MiB free in $WORKDIR"
+  fi
 }
 
 backup_current_module(){
@@ -653,9 +686,7 @@ backup_current_module(){
   st_set MODULE_PATH "$cur"; st_set MODULE_BACKUP "$backup"; TRANSACTION_MODULE=1
 }
 
-build_install_module(){
-  warn "Building the open kvm.ko from kernel sources on this host is EXPERIMENTAL."
-  warn "It replaces a host-wide kernel module. Keep a way to boot a previous kernel."
+prepare_kernel_tools(){
   mkdir -p "$WORKDIR/kernel" || die "Cannot create $WORKDIR/kernel"
   # This archive is covered by SHA256SUMS. No root code is fetched from main.
   tar --no-same-owner -xzf "$WORKDIR/$CFG_KERNEL_ASSET" -C "$WORKDIR/kernel" \
@@ -664,20 +695,98 @@ build_install_module(){
   for f in kvm-antidetect.py build-kvm.sh install-kvm.sh; do
     [[ -f "$WORKDIR/kernel/$f" ]] || die "Kernel archive is missing $f"
   done
-  info "Building the module; this can take several minutes and requires matching kernel sources..."
-  KSRC="${KSRC:-}" bash "$WORKDIR/kernel/build-kvm.sh" \
-    || die "kvm.ko build failed (see above; deb-src or --ksrc PATH may be required)"
-  local rel built; rel="$(uname -r)"; built="$WORKDIR/kernel/out/kvm.ko"
-  [[ -f "$built" ]] || die "Built module not found: $built"
-  modinfo "$built" 2>/dev/null | grep -q '^realpc:' \
-    || die "Built module has no realpc marker; refusing installation"
-  ok "Built: $built (vermagic $(modinfo -F vermagic "$built"))"
+}
 
+module_metadata_value(){ sed -n "s/^$1=//p" "$2" | tail -1; }
+
+verify_prebuilt_module(){
+  local mod=$1 metadata=$2 rel current current_vm new_vm config symvers
+  local expected actual metadata_vm
+  rel="$(uname -r)"
+  [[ -s "$mod" && -s "$metadata" ]] || die "Prebuilt KVM module or metadata is missing for $rel"
+  new_vm="$(modinfo -F vermagic "$mod" 2>/dev/null)" \
+    || die "Cannot read prebuilt module vermagic"
+  [[ "$new_vm" == "$rel "* ]] \
+    || die "Prebuilt KVM vermagic '$new_vm' does not match running kernel $rel"
+  current="$(modinfo -n kvm 2>/dev/null)" || die "Cannot resolve the active kvm.ko with modinfo"
+  current_vm="$(modinfo -F vermagic "$current" 2>/dev/null)" \
+    || die "Cannot read the active kvm.ko vermagic"
+  [[ "$new_vm" == "$current_vm" ]] \
+    || die "Prebuilt KVM vermagic differs from the installed kvm.ko"
+  modinfo "$mod" 2>/dev/null | grep -q '^realpc:' \
+    || die "Prebuilt module has no realpc marker; refusing installation"
+
+  config="${REALPC_KERNEL_CONFIG:-/boot/config-$rel}"
+  symvers="${REALPC_MODULE_SYMVERS:-/lib/modules/$rel/build/Module.symvers}"
+  [[ -s "$config" ]] || die "Running-kernel config is missing: $config"
+  [[ -s "$symvers" ]] || die "Running-kernel Module.symvers is missing: $symvers"
+  for pair in "REALPC_CONFIG_SHA256:$config" "REALPC_MODULE_SYMVERS_SHA256:$symvers"; do
+    local field=${pair%%:*} path=${pair#*:}
+    expected="$(module_metadata_value "$field" "$metadata")"
+    [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || die "Prebuilt metadata lacks a valid $field"
+    actual="$(sha256sum "$path" | awk '{print $1}')"
+    [[ "$actual" == "$expected" ]] \
+      || die "Prebuilt KVM $field does not match the running kernel; use --kvm-build"
+  done
+  metadata_vm="$(module_metadata_value REALPC_VERMAGIC "$metadata")"
+  [[ "$metadata_vm" == "$new_vm" ]] || die "Prebuilt KVM metadata vermagic mismatch"
+  expected="$(module_metadata_value REALPC_MODULE_SHA256 "$metadata")"
+  actual="$(sha256sum "$mod" | awk '{print $1}')"
+  [[ -n "$expected" && "$actual" == "$expected" ]] || die "Prebuilt KVM metadata module hash mismatch"
+  ok "Prebuilt KVM matches kernel $rel, vermagic, config and Module.symvers"
+}
+
+verify_prebuilt_assets(){
+  local rel kvm_asset kvm_info
+  rel="$(uname -r)"; kvm_asset="$(prebuilt_kvm_asset "$rel")"
+  kvm_info="$(prebuilt_kvm_info_asset "$rel")"
+  [[ -f "$WORKDIR/$kvm_asset" && -f "$WORKDIR/$kvm_info" ]] \
+    || die "Release $RESOLVED_TAG has no prebuilt KVM for $rel; rerun with --kvm-build"
+  verify_assets "$WORKDIR" "$kvm_asset" "$kvm_info" \
+    || die "Prebuilt KVM assets failed SHA-256 verification"
+  verify_prebuilt_module "$WORKDIR/$kvm_asset" "$WORKDIR/$kvm_info"
+}
+
+install_module_file(){
+  local rel=$1 built=$2
+  [[ -f "$built" ]] || die "Module not found: $built"
+  modinfo "$built" 2>/dev/null | grep -q '^realpc:' \
+    || die "Module has no realpc marker; refusing installation"
   # Save the exact module active before this operation. On repeat strong updates
   # this is the previous custom module, not an older stock-only backup.
   backup_current_module "$rel"
   bash "$WORKDIR/kernel/install-kvm.sh" --yes || die "kvm.ko installation failed; changes will be rolled back"
   [[ -d /sys/module/kvm ]] || die "KVM is not loaded after installation; changes will be rolled back"
+}
+
+build_install_module(){
+  warn "Building the open kvm.ko from kernel sources on this host is EXPERIMENTAL."
+  warn "It replaces a host-wide kernel module. Keep a way to boot a previous kernel."
+  prepare_kernel_tools
+  info "Building the module; this can take several minutes and requires matching kernel sources..."
+  KSRC="${KSRC:-}" bash "$WORKDIR/kernel/build-kvm.sh" \
+    || die "kvm.ko build failed (see above; deb-src or --ksrc PATH may be required)"
+  local rel built; rel="$(uname -r)"; built="$WORKDIR/kernel/out/kvm.ko"
+  ok "Built: $built (vermagic $(modinfo -F vermagic "$built"))"
+  install_module_file "$rel" "$built"
+}
+
+prebuilt_install_module(){
+  local rel kvm_asset kvm_info built
+  rel="$(uname -r)"; kvm_asset="$(prebuilt_kvm_asset "$rel")"
+  kvm_info="$(prebuilt_kvm_info_asset "$rel")"
+  verify_prebuilt_assets
+  warn "Installing the verified prebuilt kvm.ko is EXPERIMENTAL and affects the whole host."
+  prepare_kernel_tools
+  mkdir -p "$WORKDIR/kernel/out" || die "Cannot create $WORKDIR/kernel/out"
+  built="$WORKDIR/kernel/out/kvm.ko"
+  cp "$WORKDIR/$kvm_asset" "$built" || die "Could not stage the prebuilt kvm.ko"
+  ok "Using prebuilt: $kvm_asset (vermagic $(modinfo -F vermagic "$built"))"
+  install_module_file "$rel" "$built"
+}
+
+install_selected_module(){
+  if [[ "$KVM_BUILD" == 1 ]]; then build_install_module; else prebuilt_install_module; fi
 }
 
 # CHECK
@@ -713,18 +822,23 @@ install_normal(){ need_root; transaction_begin
   transaction_end
 }
 
-# STRONG: userspace plus an open kvm.ko built for the running kernel.
+# STRONG: userspace plus an open kvm.ko for the exact running kernel.
 install_strong(){ need_root
-  echo "=== STRONG (open kvm.ko built on this host) ==="
+  if [[ "$KVM_BUILD" == 1 ]]; then
+    echo "=== STRONG (open kvm.ko built on this host) ==="
+  else
+    echo "=== STRONG (verified prebuilt kvm.ko) ==="
+  fi
   strong_preflight; transaction_begin
   fetch_assets strong
+  [[ "$KVM_BUILD" == 1 ]] || verify_prebuilt_assets
   install_userspace || { local rc=$?; [[ "$rc" == 2 ]] && { transaction_end; return 0; }; exit "$rc"; }
-  if ! confirm "Build and install the open kvm.ko?"; then
+  if ! confirm "Install the open kvm.ko?"; then
     record_install_state normal
     ok "Module skipped. The installation is recorded as normal for future updates."
     transaction_end; return 0
   fi
-  build_install_module
+  install_selected_module
   record_install_state strong
   ok "STRONG installation complete. Next: --mode configvm --vmid N"
   transaction_end
@@ -753,19 +867,20 @@ update_install(){ need_root
       return 0
     fi
     kernel_only=1
-    info "Release is unchanged, but the running kernel changed; rebuilding the strong module only."
+    info "Release is unchanged, but the running kernel changed; installing the strong module only."
   fi
 
   if [[ "$mode" == strong ]]; then
+    [[ "$KVM_BUILD" == 1 ]] || verify_prebuilt_assets
     strong_preflight
-    confirm "Update strong mode and build/install kvm.ko for $current_kernel?" \
+    confirm "Update strong mode and install kvm.ko for $current_kernel?" \
       || { info "Update canceled; no system changes made."; return 0; }
   fi
   transaction_begin
   if [[ "$kernel_only" == 0 ]]; then
     install_userspace || { local rc=$?; [[ "$rc" == 2 ]] && { transaction_end; return 0; }; exit "$rc"; }
   fi
-  [[ "$mode" == strong ]] && build_install_module
+  [[ "$mode" == strong ]] && install_selected_module
   record_install_state "$mode"
   transaction_end
   ok "Update complete: mode=$mode release=$RESOLVED_TAG kernel=${current_kernel}. VM configs were not changed."

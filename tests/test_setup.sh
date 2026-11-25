@@ -368,6 +368,85 @@ echo "setup asset/transaction tests: PASS"
   [[ "$TRANSACTION_MODULE" == 1 ]]
 ) || { echo "current module backup failed" >&2; exit 1; }
 
+# Prebuilt KVM accepts only the exact kernel, vermagic, config and Module.symvers.
+(
+  WORKDIR="$TMP/prebuilt-kvm"; STATE="$WORKDIR/.realpc-state"; mkdir -p "$WORKDIR"
+  kernel_release=7.0.14-6-pve
+  module_vermagic='7.0.14-6-pve SMP preempt mod_unload modversions '
+  kvm_asset="$(prebuilt_kvm_asset "$kernel_release")"
+  kvm_info="$(prebuilt_kvm_info_asset "$kernel_release")"
+  printf prebuilt-module > "$WORKDIR/$kvm_asset"
+  printf active-module > "$TMP/prebuilt-active.ko"
+  printf config > "$TMP/prebuilt.config"
+  printf symvers > "$TMP/prebuilt.symvers"
+  module_sha=$(sha256sum "$WORKDIR/$kvm_asset" | awk '{print $1}')
+  config_sha=$(sha256sum "$TMP/prebuilt.config" | awk '{print $1}')
+  symvers_sha=$(sha256sum "$TMP/prebuilt.symvers" | awk '{print $1}')
+  cat > "$WORKDIR/$kvm_info" <<EOF
+REALPC_VERMAGIC=$module_vermagic
+REALPC_CONFIG_SHA256=$config_sha
+REALPC_MODULE_SYMVERS_SHA256=$symvers_sha
+REALPC_MODULE_SHA256=$module_sha
+EOF
+  (cd "$WORKDIR" && sha256sum "$kvm_asset" "$kvm_info" > SHA256SUMS)
+  REALPC_KERNEL_CONFIG="$TMP/prebuilt.config"
+  REALPC_MODULE_SYMVERS="$TMP/prebuilt.symvers"
+  RESOLVED_TAG=prebuilt-test
+  uname(){ [[ "$1" == -r ]] && printf '%s\n' "$kernel_release"; }
+  modinfo(){
+    if [[ $# == 1 && "$1" == "$WORKDIR/$kvm_asset" ]]; then
+      printf 'realpc: fixture\n'
+    elif [[ $# == 3 && "$1" == -F && "$2" == vermagic ]]; then
+      printf '%s\n' "$module_vermagic"
+    elif [[ $# == 2 && "$1 $2" == "-n kvm" ]]; then
+      printf '%s\n' "$TMP/prebuilt-active.ko"
+    else
+      return 1
+    fi
+  }
+  verify_prebuilt_assets >/dev/null
+
+  printf changed >> "$TMP/prebuilt.config"
+  if (verify_prebuilt_module "$WORKDIR/$kvm_asset" "$WORKDIR/$kvm_info" >/dev/null 2>&1); then
+    echo "prebuilt KVM accepted a changed kernel config" >&2; exit 1
+  fi
+  printf config > "$TMP/prebuilt.config"
+  kernel_release=7.0.14-7-pve
+  if (verify_prebuilt_module "$WORKDIR/$kvm_asset" "$WORKDIR/$kvm_info" >/dev/null 2>&1); then
+    echo "prebuilt KVM accepted a different running kernel" >&2; exit 1
+  fi
+) || { echo "prebuilt KVM identity checks failed" >&2; exit 1; }
+
+# The 8-GiB requirement belongs only to an explicit host build.
+(
+  WORKDIR="$TMP/strong-preflight"; STATE="$WORKDIR/.realpc-state"; mkdir -p "$WORKDIR"
+  need_root(){ :; }; cpu_vendor(){ printf intel; }
+  mokutil(){ printf 'SecureBoot disabled\n'; }
+  qm(){ [[ "$1" == list ]] && printf 'VMID NAME STATUS MEM(MB) BOOTDISK(GB) PID\n'; }
+  df(){
+    printf called >> "$TMP/strong-preflight.df"
+    printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\nx 100 0 1024 0%% /\n'
+  }
+  KVM_BUILD=0
+  strong_preflight >/dev/null
+  [[ ! -e "$TMP/strong-preflight.df" ]] || { echo "prebuilt mode checked build disk space" >&2; exit 1; }
+  KVM_BUILD=1
+  if (strong_preflight >/dev/null 2>&1); then
+    echo "host build accepted insufficient disk space" >&2; exit 1
+  fi
+) || { echo "Strong preflight split failed" >&2; exit 1; }
+
+# Both installation paths are explicit and cannot silently replace each other.
+(
+  KVM_BUILD=0
+  build_install_module(){ printf build >> "$TMP/module-dispatch.calls"; }
+  prebuilt_install_module(){ printf prebuilt >> "$TMP/module-dispatch.calls"; }
+  install_selected_module
+  KVM_BUILD=1
+  install_selected_module
+  [[ $(cat "$TMP/module-dispatch.calls") == prebuiltbuild ]]
+) || { echo "Strong module source dispatch failed" >&2; exit 1; }
+
 # Installation metadata is committed atomically: a failed rename must preserve
 # the previous mode/tag/kernel instead of leaving a partially updated record.
 (
@@ -412,10 +491,10 @@ YES=1
 # A recorded strong installation updates both userspace and the module.
 (
   WORKDIR="$TMP/update-strong"; STATE="$WORKDIR/.realpc-state"; mkdir -p "$WORKDIR"
-  need_root(){ :; }; strong_preflight(){ :; }
+  need_root(){ :; }; strong_preflight(){ :; }; verify_prebuilt_assets(){ :; }
   fetch_assets(){ RESOLVED_TAG=build-2; RESOLVED_COMMIT="$commit"; }
   install_userspace(){ printf 'packages\n' >> "$TMP/update-strong.calls"; }
-  build_install_module(){ printf 'module\n' >> "$TMP/update-strong.calls"; }
+  install_selected_module(){ printf 'module\n' >> "$TMP/update-strong.calls"; }
   configvm(){ printf 'configvm\n' >> "$TMP/update-strong.calls"; }
   st_set INSTALL_MODE strong; st_set RELEASE_TAG build-1; st_set KERNEL_RELEASE old-kernel
   update_install >/dev/null
@@ -427,10 +506,10 @@ YES=1
 # The same strong release on a different running kernel rebuilds only the module.
 (
   WORKDIR="$TMP/update-strong-kernel"; STATE="$WORKDIR/.realpc-state"; mkdir -p "$WORKDIR"
-  need_root(){ :; }; strong_preflight(){ :; }
+  need_root(){ :; }; strong_preflight(){ :; }; verify_prebuilt_assets(){ :; }
   fetch_assets(){ RESOLVED_TAG=build-2; RESOLVED_COMMIT="$commit"; }
   install_userspace(){ printf 'packages\n' >> "$TMP/update-strong-kernel.calls"; }
-  build_install_module(){ printf 'module\n' >> "$TMP/update-strong-kernel.calls"; }
+  install_selected_module(){ printf 'module\n' >> "$TMP/update-strong-kernel.calls"; }
   st_set INSTALL_MODE strong; st_set RELEASE_TAG build-2; st_set KERNEL_RELEASE old-kernel
   update_install >/dev/null
   [[ $(cat "$TMP/update-strong-kernel.calls") == module ]]
@@ -443,7 +522,7 @@ YES=1
   need_root(){ :; }; strong_preflight(){ echo "preflight ran for strong no-op" >&2; exit 1; }
   fetch_assets(){ RESOLVED_TAG=build-2; RESOLVED_COMMIT="$commit"; }
   install_userspace(){ echo "strong no-op reinstalled packages" >&2; exit 1; }
-  build_install_module(){ echo "strong no-op rebuilt module" >&2; exit 1; }
+  install_selected_module(){ echo "strong no-op rebuilt module" >&2; exit 1; }
   st_set INSTALL_MODE strong; st_set RELEASE_TAG build-2; st_set KERNEL_RELEASE "$(uname -r)"
   update_install >/dev/null
 ) || { echo "strong same-release/kernel no-op failed" >&2; exit 1; }
@@ -483,13 +562,13 @@ fi
 for failure in packages module; do
   if (
     WORKDIR="$TMP/update-fail-$failure"; STATE="$WORKDIR/.realpc-state"; mkdir -p "$WORKDIR"
-    need_root(){ :; }; strong_preflight(){ :; }
+    need_root(){ :; }; strong_preflight(){ :; }; verify_prebuilt_assets(){ :; }
     fetch_assets(){ RESOLVED_TAG=build-2; RESOLVED_COMMIT="$commit"; }
     install_userspace(){
       TRANSACTION_PKGS=1
       [[ "$failure" == packages ]] && die "simulated package failure"
     }
-    build_install_module(){ TRANSACTION_MODULE=1; die "simulated build failure"; }
+    install_selected_module(){ TRANSACTION_MODULE=1; die "simulated build failure"; }
     rollback(){ printf '%s\n' "$1" >> "$TMP/update-fail-$failure.rollback"; }
     if [[ "$failure" == packages ]]; then
       st_set INSTALL_MODE normal
@@ -522,7 +601,7 @@ cat > "$kdir/x86.c" <<'C'
 static int complete_hypercall_exit(struct kvm_vcpu *vcpu) { return 0; }
 int kvm_emulate_hypercall(struct kvm_vcpu *vcpu) { return 0; }
 static int emulator_fix_hypercall(struct x86_emulate_ctxt *ctxt) { return 0; }
-static int kvm_get_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info) { return 0; }
+int kvm_get_msr_common(struct kvm_vcpu *vcpu, struct msr_data *msr_info) { return 0; }
 C
 cat > "$kdir/cpuid.c" <<'C'
 void kvm_vcpu_after_set_cpuid(struct kvm_vcpu *vcpu)
