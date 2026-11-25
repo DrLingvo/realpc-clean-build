@@ -29,7 +29,7 @@ static int emulator_fix_hypercall(struct x86_emulate_ctxt *ctxt)
 	return X86EMUL_CONTINUE;
 }
 
-static int kvm_get_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
+int kvm_get_msr_common(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
 {
 	switch (msr_info->index) {
 	default:
@@ -99,6 +99,23 @@ class InjectorTest(unittest.TestCase):
         self.assertIn("msr_info->index >= 0x4b564d00", patched)
         self.assertIn("msr_info->index <= 0x4b564d08", patched)
         self.assertLess(patched.index("realpc_kvm_msr_gp"), patched.index("switch (msr_info->index)"))
+
+    def test_antidetect_supports_legacy_msr_handler(self):
+        legacy = X86_FIXTURE.replace(
+            "int kvm_get_msr_common(", "static int kvm_get_msr(", 1,
+        )
+        proc, patched, _ = self.run_patch(ANTIDETECT, legacy)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("realpc_kvm_msr_gp", patched)
+        self.assertLess(patched.index("realpc_kvm_msr_gp"), patched.index("switch (msr_info->index)"))
+
+    def test_antidetect_rejects_unknown_msr_handler_without_writing(self):
+        broken = X86_FIXTURE.replace("int kvm_get_msr_common(", "int unrelated_msr_handler(", 1)
+        proc, result, cpuid = self.run_patch(ANTIDETECT, broken)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("Cannot find kvm_get_msr_common or legacy kvm_get_msr", proc.stderr)
+        self.assertEqual(result, broken)
+        self.assertEqual(cpuid, CPUID_AFTER_SET_FIXTURE)
 
     def test_antidetect_is_idempotent(self):
         first, patched, cpuid = self.run_patch(ANTIDETECT, X86_FIXTURE)

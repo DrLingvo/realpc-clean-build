@@ -61,7 +61,7 @@ jobs:
           tools/source-hash.sh > /tmp/realpc-source-hash.txt
           for input in tools/make-logo.py tools/gen-profile.py tools/disk_identity.py \
             tools/vm-config.py tools/chipset_map.py tools/smbios_tables.py \
-            tools/consistency_lint.py ci/container-build.sh qemu/host-sensors-device.c \
+            tools/consistency_lint.py ci/container-build.sh ci/container-kvm.sh qemu/host-sensors-device.c \
             seabios/strong-fw-cfg.sh seabios/strong-host-bridge.sh \
             acpi/build-wsmt.py .github/workflows/build.yml; do
             grep -F "  $input" /tmp/realpc-source-hash.txt >/dev/null || {

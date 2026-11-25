@@ -1,19 +1,19 @@
 #!/bin/bash
-# Build an open kvm.ko (with the anti-detection changes from kernel/kvm-antidetect.py)
-# ON the Proxmox VE host, against the exact running kernel. Building here rather than in
-# CI is deliberate: the module must match the running kernel's version and config exactly,
-# and the only way to guarantee that ABI match is to build against this host's own source.
+# Build an open kvm.ko with the anti-detection changes from kvm-antidetect.py.
+# On PVE the default inputs come from the exact running kernel. CI may override KREL,
+# KERNEL_CONFIG and MODULE_SYMVERS with a signed Proxmox kernel/headers package pair.
+# The installer verifies all three identities again before installing a prebuilt module.
 #
 # EXPERIMENTAL. This replaces a core kernel module. Keep the backup this script makes and
-# know how to boot a previous kernel before you load the result. Not boot-tested by CI.
+# know how to boot a previous kernel before you load the result. CI builds are not boot tests.
 #
 # usage (as root on the PVE host):
 #   KSRC=/path/to/kernel/source ./build-kvm.sh      # if you already have matching source
 #   ./build-kvm.sh                                   # tries apt-get source for this kernel
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
-KREL=$(uname -r)                       # e.g. 7.0.14-6-pve
-echo "Running kernel: $KREL"
+KREL=${KREL:-$(uname -r)}              # e.g. 7.0.14-6-pve
+echo "Target kernel: $KREL"
 
 apt-get install -y --no-install-recommends build-essential libelf-dev flex bison bc \
   libssl-dev libdw-dev dwarves git patch >/dev/null
@@ -103,13 +103,13 @@ if [ -z "${KSRC:-}" ]; then
   pkg="proxmox-kernel-${KREL}"
   srcdir="/usr/src/kernel-src-$KREL"
   mkdir -p "$srcdir"; cd "$srcdir"
-  echo "Fetching source for $pkg with apt-get source..."
-  if apt-get source "$pkg"; then
+  echo "Fetching source for $pkg..."
+  if [ "${REALPC_FORCE_GIT:-0}" != 1 ] && apt-get source "$pkg"; then
     found=$(find "$srcdir" -maxdepth 6 -type f -path '*/arch/x86/kvm/Makefile' -print -quit)
     [ -n "$found" ] || { echo "apt source completed but no KVM Makefile was found" >&2; exit 1; }
     KSRC=${found%/arch/x86/kvm/Makefile}
   else
-    echo "apt source is unavailable; trying immutable Proxmox git commits..."
+    echo "Using immutable Proxmox git commits..."
     if ! fetch_pinned_source; then
       cat >&2 <<EOF
 Could not obtain exact source for $KREL.
@@ -125,7 +125,10 @@ echo "Kernel source: $KSRC"
 
 # --- configure the tree to match the running kernel -------------------------------------
 cd "$KSRC"
-if [ -f "/boot/config-$KREL" ]; then
+if [ -n "${KERNEL_CONFIG:-}" ]; then
+  [ -s "$KERNEL_CONFIG" ] || { echo "KERNEL_CONFIG is missing or empty: $KERNEL_CONFIG" >&2; exit 1; }
+  cp "$KERNEL_CONFIG" .config
+elif [ -f "/boot/config-$KREL" ]; then
   cp "/boot/config-$KREL" .config
 elif [ -f "/lib/modules/$KREL/build/.config" ]; then
   cp "/lib/modules/$KREL/build/.config" .config
@@ -149,7 +152,7 @@ built_release=$(make -s kernelrelease)
 # vermagic alone is not an ABI check when CONFIG_MODVERSIONS is enabled. Reuse the exact
 # running kernel's symbol CRCs instead of silently building a module that cannot load.
 if scripts/config --state MODVERSIONS 2>/dev/null | grep -qx y; then
-  symvers="/lib/modules/$KREL/build/Module.symvers"
+  symvers="${MODULE_SYMVERS:-/lib/modules/$KREL/build/Module.symvers}"
   [ -s "$symvers" ] || {
     echo "CONFIG_MODVERSIONS=y, but $symvers is missing" >&2
     echo "install the exact proxmox-headers-$KREL package or provide its Module.symvers" >&2
