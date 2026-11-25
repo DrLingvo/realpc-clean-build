@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Deterministic, vendor-coherent ATA/SATA identity for one virtual disk."""
-__version__ = "1.1.0"  # bump on every change to this script
+__version__ = "1.2.0"  # bump on every change to this script
 import argparse
 import hashlib
 import hmac
@@ -76,11 +76,17 @@ def digest(vmid, disk, purpose):
     return hmac.new(key, f"{disk}:{purpose}".encode(), hashlib.sha256).hexdigest()
 
 
-def disk_identity(vmid, disk, size_bytes):
+def disk_identity(vmid, disk, size_bytes, allow_inexact=False):
     candidates = [sku for sku in SKUS if sku["bytes"] == size_bytes]
     if not candidates:
-        supported = ", ".join(str(sku["bytes"]) for sku in SKUS)
-        raise ValueError(f"disk size {size_bytes} has no exact supported SKU; sizes: {supported}")
+        if not allow_inexact:
+            supported = ", ".join(str(sku["bytes"]) for sku in SKUS)
+            raise ValueError(f"disk size {size_bytes} has no exact supported SKU; sizes: {supported}")
+        # testing shortcut (--skip-disk-size): keep a coherent vendor identity but accept that
+        # the model's implied capacity will not match the actual (round) disk size. This is a
+        # real tell; only for exercising the rest of the release on block storage.
+        target = nearest_sku_up(size_bytes) or max(sku["bytes"] for sku in SKUS)
+        candidates = [sku for sku in SKUS if sku["bytes"] == target]
     selector = int(digest(vmid, disk, "sku")[:8], 16)
     sku = dict(candidates[selector % len(candidates)])
     serial_hash = digest(vmid, disk, "serial").upper()

@@ -159,6 +159,36 @@ local-lvm:vm-101-disk-10      raw    images 999999999999 101
                     VM.volume_size(volume)
 
 
+class SkipDiskSizeTest(unittest.TestCase):
+    def setUp(self):
+        self.config = """memory: 16384
+cores: 8
+net0: virtio=02:F0:5D:01:02:03,bridge=vmbr0
+virtio0: local-lvm:vm-100-disk-0
+agent: 1
+[snapshot]
+args: snapshot-must-not-change
+"""
+
+    def test_allow_inexact_picks_nearest_real_sku(self):
+        ident = VM.DISK.disk_identity("100", "sata0", 137438953472, allow_inexact=True)
+        self.assertEqual(ident["bytes"], 240057409536)  # 128 GiB rounds up to a real 240 GB
+        self.assertTrue(ident["model"] and ident["serial"] and ident["firmware"])
+
+    def test_non_sku_size_raises_without_skip_but_renders_with_it(self):
+        gen = profile()
+        sizes = {"virtio0": 137438953472}  # 128 GiB, not an exact real SKU
+        with self.assertRaises(ValueError):
+            VM.render(self.config, gen, sizes, "/acpi", "")
+        result = VM.render(self.config, gen, sizes, "/acpi", "", allow_inexact=True)
+        args = shlex.split(next(line[6:] for line in result.splitlines()
+                                if line.startswith("args: ")))
+        disk_set = args[args.index("-set") + 1]
+        self.assertTrue(disk_set.startswith("device.sata0.model="))
+        for field in ("model=", "serial=", "version=", "wwn="):
+            self.assertIn(field, disk_set)
+
+
 class DiskResizeTest(unittest.TestCase):
     def _run_factory(self, path="/tmp/vm-100-disk-0.raw"):
         calls = []

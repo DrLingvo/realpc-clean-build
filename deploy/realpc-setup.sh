@@ -30,6 +30,7 @@ CFG_LOG="none"                            # none|normal|debug (file logging only
 CFG_LOGFILE=""                            # Empty: <script directory>/<script name>.log
 CFG_VMID=""                               # VM ID for configvm
 CFG_YES=0                                 # 1: do not ask for confirmation
+CFG_SKIP_DISK_SIZE=0                       # configvm: 1 = skip exact disk-size (TESTING)
 CFG_KSRC=""                               # strong build: matching kernel source tree
 CFG_KVM_BUILD=0                           # strong: 0: prebuilt; 1: build on this host
 CFG_MIN_FREE_MB=8192                      # strong build: minimum free space in WORKDIR
@@ -51,6 +52,7 @@ SELF_DIR="$(dirname "$SELF")"; SELF_NAME="$(basename "$SELF")"; SELF_NAME="${SEL
 REPO="$CFG_REPO"; MODE="$CFG_MODE"; RELEASE="$CFG_RELEASE"; WORKDIR="$CFG_WORKDIR"
 DOWNLOAD="$CFG_DOWNLOAD"; LOG="$CFG_LOG"; LOGFILE="$CFG_LOGFILE"; VMID="$CFG_VMID"
 YES="$CFG_YES"; CPU_MODEL=""; HOST_SOCKET=""; KSRC="$CFG_KSRC"; KVM_BUILD="$CFG_KVM_BUILD"
+SKIP_DISK_SIZE="$CFG_SKIP_DISK_SIZE"
 
 usage(){
   cat <<'EOF'
@@ -66,6 +68,8 @@ Options:
   --vmid N          VM ID for configvm
   --socket NAME     Physical host socket override for configvm (for OEM DMI strings)
   --cpu-model NAME  Override the CPU model written by configvm
+  --skip-disk-size  configvm: skip exact real-SSD disk sizing (TESTING; capacity stays a
+                    round VM-tell). Lets configvm finish on block storage (LVM-thin).
   --kvm-prebuilt    Use the release kvm.ko for the exact running kernel (default)
   --kvm-build       Build kvm.ko on this host instead of using a prebuilt module
   --ksrc PATH       Kernel source tree matching the running kernel; implies --kvm-build
@@ -101,6 +105,7 @@ while [[ $# -gt 0 ]]; do
     --kvm-build) KVM_BUILD=1; shift ;;
     --ksrc) KSRC="${2:?missing value for --ksrc}"; KVM_BUILD=1; shift 2 ;;
     --yes|-y) YES=1; shift ;;
+    --skip-disk-size) SKIP_DISK_SIZE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -932,13 +937,19 @@ with open(sys.argv[1], encoding="utf-8") as f:
 assert profile["summary"]["cpu_source"] == "host"
 assert profile["summary"]["cpu"] == sys.argv[2]
 PY
-  info "Rounding file-based disks up to the nearest real SSD size (grow-only, thin-safe)..."
-  python3 "$tools_dir/vm-config.py" --config "$conf" --vmid "$VMID" --resize-up \
-    || die "Disk resize to a real SKU size failed; no configuration was written"
-  info "Disk growth is not undone by rollback (growing a thin disk is safe and reversible only by you)"
+  local skip_flag=""
+  if [[ "$SKIP_DISK_SIZE" == 1 ]]; then
+    skip_flag="--skip-disk-size"
+    info "--skip-disk-size: not resizing disks; disk capacity stays a round VM-tell (TESTING)"
+  else
+    info "Rounding file-based disks up to the nearest real SSD size (grow-only, thin-safe)..."
+    python3 "$tools_dir/vm-config.py" --config "$conf" --vmid "$VMID" --resize-up \
+      || die "Disk resize to a real SKU size failed; no configuration was written (try --skip-disk-size to test on block storage)"
+    info "Disk growth is not undone by rollback (growing a thin disk is safe and reversible only by you)"
+  fi
   local rendered; rendered=$(mktemp "$WORKDIR/.bak/${VMID}.rendered.XXXXXX")
   python3 "$tools_dir/vm-config.py" --config "$conf" --profile "$profile_dir/profile.json" \
-    --acpi-dir "$WORKDIR" --fragment-args "$(args_fragments "$VMID")" --out "$rendered" \
+    --acpi-dir "$WORKDIR" --fragment-args "$(args_fragments "$VMID")" --out "$rendered" $skip_flag \
     || die "VM profile validation failed; no configuration was written"
   python3 "$tools_dir/consistency_lint.py" --config "$rendered" --profile "$profile_dir/profile.json" \
     || die "Cross-layer consistency lint failed; no configuration was written"

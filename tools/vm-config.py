@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Render a coherent Strong-real PVE main section without touching snapshots."""
-__version__ = "1.2.0"  # bump on every change to this script
+__version__ = "1.3.0"  # bump on every change to this script
 import argparse
 import importlib.util
 import json
@@ -122,7 +122,7 @@ def put(main, key, value):
         main.append(f"{key}: {value}\n")
 
 
-def render(text, profile, sizes, acpi_dir, fragment_args=""):
+def render(text, profile, sizes, acpi_dir, fragment_args="", allow_inexact=False):
     main, snapshots = split_main(text)
     current = values(main)
     summary = profile["summary"]
@@ -174,7 +174,7 @@ def render(text, profile, sizes, acpi_dir, fragment_args=""):
         if old_key not in sizes:
             raise ValueError(f"exact byte size is required for {old_key}")
         identity = DISK.disk_identity(summary.get("vmid", current.get("vmid", "vm")), key,
-                                      sizes[old_key])
+                                      sizes[old_key], allow_inexact=allow_inexact)
         value = current[old_key]
         put(main, old_key, None)
         put(main, key, value)
@@ -225,6 +225,9 @@ def main_cli():
     parser.add_argument("--vmid", help="VM id; used by --resize-up to rescan PVE after resize")
     parser.add_argument("--resize-up", action="store_true",
                         help="grow file-based disks up to the nearest real SSD size, then exit")
+    parser.add_argument("--skip-disk-size", action="store_true",
+                        help="do not require an exact real-SSD disk size; use the nearest SKU's "
+                             "identity instead (TESTING ONLY: capacity will not match the model)")
     args = parser.parse_args()
     text = Path(args.config).read_text()
     main, _ = split_main(text)
@@ -239,7 +242,8 @@ def main_cli():
     sizes = json.loads(Path(args.sizes).read_text()) if args.sizes else collect_sizes(main)
     profile = json.loads(Path(args.profile).read_text())
     SMBIOS.write_profile_records(profile, Path(args.profile).parent)
-    result = render(text, profile, sizes, args.acpi_dir, args.fragment_args)
+    result = render(text, profile, sizes, args.acpi_dir, args.fragment_args,
+                    allow_inexact=args.skip_disk_size)
     Path(args.out).write_text(result)
 
 
