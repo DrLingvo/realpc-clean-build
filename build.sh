@@ -75,15 +75,15 @@ Q=$WORK/pve-qemu/qemu
 log "Applying anti-detection edits to QEMU"
 ( cd "$Q"
   bash "$KIT/qemu/anti-detection.sh"
-  sed -e "s/@SMBIOS_PSU_NAME@/$SMBIOS_PSU_NAME/" \
-      -e "s/@SMBIOS_BATTERY_VENDOR@/$SMBIOS_BATTERY_VENDOR/" \
-      -e "s/@SMBIOS_BATTERY_SERIAL@/$SMBIOS_BATTERY_SERIAL/" "$KIT/qemu/smbios.patch" | patch -p1 --forward
+  patch -p1 --forward < "$KIT/qemu/smbios.patch"
   bash "$KIT/qemu/smbios-profile.sh"
   cp "$KIT/qemu/host-sensors-device.c" hw/misc/host-sensors.c
   grep -q "host-sensors.c" hw/misc/meson.build || \
     printf "\nsystem_ss.add(when: 'CONFIG_ISA_BUS', if_true: files('host-sensors.c'))\n" >> hw/misc/meson.build
-  [ "$STRONG_PCI_IDS" = 1 ] && bash "$KIT/qemu/strong-pci-ids.sh"
-  [ "$STRONG_SUBSYS_IDS" = 1 ] && bash "$KIT/qemu/strong-subsys-ids.sh"
+  if [ "$STRONG_PCI_IDS" = 1 ]; then bash "$KIT/qemu/strong-pci-ids.sh"; fi
+  if [ "$STRONG_SUBSYS_IDS" = 1 ]; then bash "$KIT/qemu/strong-subsys-ids.sh"; fi
+  if [ "$STRONG_FW_CFG" = 1 ]; then bash "$KIT/qemu/strong-fw-cfg.sh"; fi
+  if [ "$STRONG_HOST_BRIDGE" = 1 ]; then bash "$KIT/qemu/strong-host-bridge.sh"; fi
   if [ "$HOST_SENSORS" = 1 ]; then
     patch -p1 --forward < "$KIT/qemu/host-sensors.patch"
   fi
@@ -103,7 +103,10 @@ if [ "$BUILD_SEABIOS" = 1 ]; then
   ( cd "$Q/roms/seabios" && git apply "$KIT/seabios/seabios.patch"
     # fixed version string instead of "<git>-dirty-<date>-<hostname>-prebuilt.qemu.org"
     sed -i "s/    write_version(outfile, ver + options.extra, toolstr)/    write_version(outfile, '$SEABIOS_VERSION', toolstr)/" scripts/buildversion.py
-    grep -q "'$SEABIOS_VERSION'" scripts/buildversion.py )
+    grep -q "'$SEABIOS_VERSION'" scripts/buildversion.py
+    if [ "$STRONG_FW_CFG" = 1 ]; then bash "$KIT/seabios/strong-fw-cfg.sh"; fi
+    if [ "$STRONG_HOST_BRIDGE" = 1 ]; then bash "$KIT/seabios/strong-host-bridge.sh"; fi
+  )
   ( cd "$Q/roms/seabios" && git diff ) > "$OUT/seabios-applied.diff"
   make -C "$Q/roms" bios FIRMWARE_EXTRAVERSION=
   make -C "$Q/roms" clean >/dev/null 2>&1 || true
@@ -143,7 +146,9 @@ if [ -n "$OVMF_FW_VENDOR" ]; then
   grep -q "PcdFirmwareVersionString=L\"$OVMF_FW_VERSION" "$E/debian/rules"
 fi
 log "Applying anti-detection edits to edk2"
-( cd "$E/edk2" && bash "$KIT/edk2/anti-detection.sh" && git diff ) > "$OUT/edk2-applied.diff"
+( cd "$E/edk2" && bash "$KIT/edk2/anti-detection.sh" \
+  && { [ "$STRONG_FW_CFG" != 1 ] || bash "$KIT/edk2/strong-fw-cfg.sh"; } \
+  && git diff ) > "$OUT/edk2-applied.diff"
 log "Building pve-edk2-firmware"
 make -C "$E" deb
 cp "$E"/pve-edk2-firmware-*.deb "$OUT/"

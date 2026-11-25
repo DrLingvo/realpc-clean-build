@@ -33,27 +33,13 @@ CFG_YES=0                                 # 1: do not ask for confirmation
 CFG_KSRC=""                               # strong: matching kernel source tree
 CFG_MIN_FREE_MB=8192                      # strong: minimum free space in WORKDIR
 
-CFG_AML=(ssdt.aml ssdt-ec.aml hpet.aml wsmt.aml)
+CFG_AML=(ssdt.aml wsmt.aml)
 CFG_KERNEL_ASSET="realpc-kernel-tools.tar.gz"
+CFG_VM_TOOLS_ASSET="realpc-vm-tools.tar.gz"
 CFG_SOURCE_ASSET="SOURCE-COMMIT"
 
-# __AML__ becomes the ACPI directory; __CPUMODEL__ becomes the host CPU model.
-# host-sensors=on enables the open Intel host sensor implementation.
-CFG_ARGS_TEMPLATE='-acpitable file=__AML__/ssdt.aml -acpitable file=__AML__/ssdt-ec.aml -acpitable file=__AML__/hpet.aml -acpitable file=__AML__/wsmt.aml -cpu host,host-cache-info=on,hypervisor=off,vmware-cpuid-freq=false,enforce=false,host-phys-bits=true,pmu=on,host-sensors=on -device host-sensors -smbios type=0,vendor="American Megatrends International LLC.",version=H3.7G,date=02/21/2023,release=3.7 -smbios type=1,manufacturer="Maxsun",product="MS-Terminator B760M",version="VER:H3.7G" -smbios type=2,manufacturer="Maxsun",product="MS-Terminator B760M",version="VER:H3.7G" -smbios type=3,manufacturer="Default string",version="Default string" -smbios type=17,manufacturer=Kingston,part=KF432C16BB/16,serial=K4D4001001,asset=DIMM-A1,loc_pfx=DIMM,bank=ChannelA,speed=3200 -smbios type=4,manufacturer="Intel(R) Corporation",version="__CPUMODEL__"'
-
-# Complete connector and slot instances keep WMI CIM classes populated.
-port_types=(0x10 0x10 0x10 0x10 0x1D 0x1D 0x1F 0x1F 0x1C 0x1C 0x20 0x20)
-port_connectors=(0x12 0x12 0x12 0x12 0x1F 0x1F 0x0B 0x0B 0x07 0x07 0x22 0x22)
-port_names=(USB1 USB2 USB3 USB4 AUDIO1 AUDIO2 LAN1 LAN2 VIDEO1 VIDEO2 SATA1 SATA2)
-for i in "${!port_types[@]}"; do
-  CFG_ARGS_TEMPLATE+=" -smbios type=8,internal_reference=J$((i+1)),external_reference=${port_names[$i]},connector_type=${port_connectors[$i]},port_type=${port_types[$i]}"
-done
-slot_types=(0xAA 0xA9 0xA9 0xA8 0xA8 0xA8 0xA6 0xA6 0xA6 0xA6 0xA6 0xA6)
-for i in "${!slot_types[@]}"; do
-  CFG_ARGS_TEMPLATE+=" -smbios type=9,slot_designation=SLOT$((i+1)),slot_type=${slot_types[$i]},slot_length=2,current_usage=3"
-done
-
-CFG_VM_SET="--machine q35 --bios ovmf --vga std --localtime 1 --tablet 1"
+# VM identity is generated from the real host by tools/gen-profile.py.
+# No arbitrary CPU SKU or shared hard-coded SMBIOS serial is allowed here.
 ############################# /CONFIG #########################################
 
 set -uo pipefail
@@ -447,7 +433,7 @@ PY
 ) || { rm -f "$json"; die "Could not parse the release asset list"; }
     rm -f "$json"; [[ -n "$urls" ]] || die "Release $RESOLVED_TAG has no assets"
     info "Release: $RESOLVED_TAG (all assets come from this release)"
-    local deb ov sums source_url
+    local deb ov sums source_url a u
     deb="$(pick "$urls" '/pve-qemu-kvm_[^/]*_amd64\.deb$')"
     ov="$(pick "$urls" '/pve-edk2-firmware-ovmf_[^/]*_all\.deb$')"
     sums="$(pick "$urls" '/SHA256SUMS$')"
@@ -456,12 +442,14 @@ PY
       || die "Release is missing QEMU, OVMF, SOURCE-COMMIT or SHA256SUMS"
     preserve_existing_packages
     rm -f "$WORKDIR"/pve-qemu-kvm_*_amd64.deb "$WORKDIR"/pve-edk2-firmware-ovmf_*_all.deb \
-      "$WORKDIR/SHA256SUMS" "$WORKDIR/$CFG_KERNEL_ASSET" "$WORKDIR/$CFG_SOURCE_ASSET" \
+      "$WORKDIR/SHA256SUMS" "$WORKDIR/$CFG_KERNEL_ASSET" "$WORKDIR/$CFG_VM_TOOLS_ASSET" "$WORKDIR/$CFG_SOURCE_ASSET" \
       "${CFG_AML[@]/#/$WORKDIR/}"
     dl "$sums" "$WORKDIR/SHA256SUMS"
     dl "$deb" "$WORKDIR/$(basename "$deb")"; dl "$ov" "$WORKDIR/$(basename "$ov")"
     dl "$source_url" "$WORKDIR/$CFG_SOURCE_ASSET"
-    local a u
+    u="$(pick "$urls" "/$CFG_VM_TOOLS_ASSET\$")"
+    [[ -n "$u" ]] || die "Release is missing $CFG_VM_TOOLS_ASSET"
+    dl "$u" "$WORKDIR/$CFG_VM_TOOLS_ASSET"
     for a in "${CFG_AML[@]}"; do
       u="$(pick "$urls" "/$a\$")"; [[ -n "$u" ]] || die "Release is missing $a"
       dl "$u" "$WORKDIR/$a"
@@ -478,7 +466,7 @@ PY
 
   local q o required
   q="$(find_one 'pve-qemu-kvm_*_amd64.deb')"; o="$(find_one 'pve-edk2-firmware-ovmf_*_all.deb')"
-  required=("$(basename "$q")" "$(basename "$o")" "$CFG_SOURCE_ASSET" "${CFG_AML[@]}")
+  required=("$(basename "$q")" "$(basename "$o")" "$CFG_SOURCE_ASSET" "$CFG_VM_TOOLS_ASSET" "${CFG_AML[@]}")
   [[ "$asset_mode" == strong ]] && required+=("$CFG_KERNEL_ASSET")
   verify_assets "$WORKDIR" "${required[@]}" || die "Asset verification failed; no installation performed"
   RESOLVED_COMMIT="$(tr -d '[:space:]' < "$WORKDIR/$CFG_SOURCE_ASSET")"
@@ -789,7 +777,8 @@ configvm(){ need_root
   local conf="$PVE_QEMU_DIR/${VMID}.conf"; [[ -f "$conf" ]] || die "Missing $conf (create the VM first)"
   local a
   for a in "${CFG_AML[@]}"; do [[ -f "$WORKDIR/$a" ]] || die "Missing $WORKDIR/$a; run normal/strong/update first"; done
-  verify_assets "$WORKDIR" "${CFG_AML[@]}" || die "ACPI files failed SHA-256 verification"
+  verify_assets "$WORKDIR" "$CFG_VM_TOOLS_ASSET" "${CFG_AML[@]}" || die "VM tools or ACPI files failed SHA-256 verification"
+  [[ "$(qm status "$VMID" 2>/dev/null)" == *stopped* ]] || die "Stop VM $VMID before configvm"
   if grep -q '^args:' "$conf" && [[ "$YES" != 1 ]]; then
     confirm "Rebuild the main args line and preserve host-tools fragments?" || { info "Canceled"; return 0; }
   fi
@@ -800,37 +789,36 @@ configvm(){ need_root
   local ids; ids="$(st_get CONF_VMS)"
   [[ " $ids " == *" $VMID "* ]] || st_set CONF_VMS "$ids $VMID"
   st_set "CONF_PATH_$VMID" "$conf"; st_set "CONF_BAK_$VMID" "$bak"; ok "VM config backup: $bak"
-  local model; model="${CPU_MODEL:-$(cpu_model)}"
-  local args="${CFG_ARGS_TEMPLATE//__AML__/$WORKDIR}"; args="${args//__CPUMODEL__/$model}"
-  if [[ "$(cpu_vendor)" != intel ]]; then
-    args="${args//,host-sensors=on/}"
-    info "host-sensors MSR access disabled: it is supported only on Intel hosts"
+  local tools_dir="$WORKDIR/vm-tools" profile_dir="$WORKDIR/profiles/$VMID"
+  rm -rf "$tools_dir"; mkdir -p "$tools_dir" "$profile_dir"
+  tar --no-same-owner -xzf "$WORKDIR/$CFG_VM_TOOLS_ASSET" -C "$tools_dir" \
+    || die "Could not unpack verified VM tools"
+  if [[ ! -f "$profile_dir/profile.json" ]]; then
+    python3 "$tools_dir/gen-profile.py" --cpu-source host --host-vendor "$(cpu_vendor)" \
+      --vmid "$VMID" --seed "$VMID" --out "$profile_dir" >/dev/null \
+      || die "Could not generate a host-truth profile; verify the host socket"
   fi
-  args+="$(args_fragments "$VMID")"
-  qm set "$VMID" --args "$args" >/dev/null \
-    || die "qm set --args failed; the VM configuration will be restored"
-  ok "Updated main args for VM $VMID (CPU: $model); fragments preserved"
-
-  local -a vm_set filtered=()
-  read -r -a vm_set <<< "$CFG_VM_SET"
-  local skip=0 token
-  if awk '/^\[/{exit} /^hostpci[0-9]+:.*00:02\.0/{found=1} END{exit !found}' "$conf"; then
-    for token in "${vm_set[@]}"; do
-      if (( skip )); then skip=0; continue; fi
-      if [[ "$token" == --vga ]]; then skip=1; continue; fi
-      filtered+=("$token")
-    done
-    info "Full IGD passthrough detected: preserving vga and hostpci settings"
-  else
-    filtered=("${vm_set[@]}")
-  fi
-  if (( ${#filtered[@]} )); then
-    info "qm set $VMID ${filtered[*]}"; qm set "$VMID" "${filtered[@]}" >/dev/null \
-      || die "qm set failed; the VM configuration will be restored"
-  fi
+  python3 - "$profile_dir/profile.json" "$(cpu_model)" <<'PY' \
+    || die "Saved profile CPU differs from the current host; remove the VM profile and regenerate it"
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    profile = json.load(f)
+assert profile["summary"]["cpu_source"] == "host"
+assert profile["summary"]["cpu"] == sys.argv[2]
+PY
+  local rendered; rendered=$(mktemp "$WORKDIR/.bak/${VMID}.rendered.XXXXXX")
+  python3 "$tools_dir/vm-config.py" --config "$conf" --profile "$profile_dir/profile.json" \
+    --acpi-dir "$WORKDIR" --fragment-args "$(args_fragments "$VMID")" --out "$rendered" \
+    || die "VM profile validation failed; no configuration was written"
+  python3 "$tools_dir/consistency_lint.py" --config "$rendered" --profile "$profile_dir/profile.json" \
+    || die "Cross-layer consistency lint failed; no configuration was written"
+  cat "$rendered" > "$conf.realpc-tmp" || die "Could not write the temporary VM configuration"
+  chmod --reference="$conf" "$conf.realpc-tmp"; mv "$conf.realpc-tmp" "$conf" \
+    || die "Could not activate the VM configuration; rollback will be used"
+  ok "Applied host-truth profile, per-disk SATA identities and profile MAC to VM $VMID"
   st_set CONTRACT_VERSION 1
   st_set "CONF_SHA_$VMID" "$(sha256sum "$conf" | awk '{print $1}')"
-  info "The cluster-wide MAC prefix is not changed; set MAC addresses in each VM net device."
+  info "The gateway and bridge can still observe the generated MAC; this is expected network exposure."
   ok "Done. Start the VM and check sensors with HWiNFO/AIDA64."
   transaction_end
 }

@@ -23,9 +23,21 @@ Platforms: intel_desktop_lga1700, intel_desktop_lga1200, amd_desktop_am5, amd_de
            intel_laptop, server  (omit --platform to pick at random)
 """
 import argparse
+import json
 import random
+import re
+import os
+import shlex
+import subprocess
 import sys
 import uuid
+import importlib.util
+from pathlib import Path
+
+CHIPSET_SPEC = importlib.util.spec_from_file_location(
+    "chipset_map", str(Path(__file__).with_name("chipset_map.py")))
+CHIPSET = importlib.util.module_from_spec(CHIPSET_SPEC)
+CHIPSET_SPEC.loader.exec_module(CHIPSET)
 
 # memory_type byte (SMBIOS 7.18.2): DDR3=0x18 DDR4=0x1a DDR5=0x22
 # form_factor (7.18.1): DIMM=0x09 SODIMM=0x0d
@@ -49,14 +61,6 @@ MEM_CLASS = {
         ("SK Hynix", "HMA82GR7DJR8N-XN", 3200)]),
 }
 FF_NAME = {DIMM: "DIMM", SODIMM: "SODIMM"}
-
-# board maker -> PCI subsystem vendor id (for STRONG_SUBSYS_IDS, so onboard devices carry the
-# board's id instead of 0x1af4 Red Hat)
-SUBSYS_VENDOR = {
-    "ASUSTeK COMPUTER INC.": 0x1043, "Micro-Star International Co., Ltd.": 0x1462,
-    "Gigabyte Technology Co., Ltd.": 0x1458, "Maxsun": 0x1462, "LENOVO": 0x17AA,
-    "Dell Inc.": 0x1028, "HP": 0x103C, "Supermicro": 0x15D9,
-}
 
 AMI = "American Megatrends International, LLC."
 
@@ -152,6 +156,35 @@ PLATFORMS = {
     },
 }
 
+# Version, release date and numeric system-BIOS release are one board record, not independent
+# random strings. These are identity metadata only; firmware behavior is still OVMF/SeaBIOS.
+BOARD_BIOS = {
+    "PRO B760M-P": ("1.10", "01/18/2023", "1.10"),
+    "PRIME B760M-A": ("0402", "01/13/2023", "1.0"),
+    "B760M DS3H": ("F1", "01/06/2023", "1.0"),
+    "MS-Terminator B760M": ("1.0", "02/10/2023", "1.0"),
+    "PRIME B560M-A": ("0402", "03/19/2021", "1.0"),
+    "B560M PRO-VDH": ("1.00", "03/16/2021", "1.0"),
+    "B560M DS3H": ("F1", "03/15/2021", "1.0"),
+    "TUF GAMING B650-PLUS": ("0607", "01/20/2023", "1.0"),
+    "MAG B650 TOMAHAWK WIFI": ("1.10", "01/31/2023", "1.10"),
+    "B650 AORUS ELITE AX": ("F3", "01/12/2023", "1.0"),
+    "TUF GAMING B550-PLUS": ("2403", "03/17/2022", "1.0"),
+    "B550-A PRO": ("1.70", "03/11/2022", "1.70"),
+    "B550 AORUS ELITE V2": ("F14", "03/25/2022", "1.0"),
+    "20U9": ("N27ET38W (1.24)", "06/15/2022", "1.24"),
+    "0K3WPT": ("1.12.0", "05/20/2022", "1.12"),
+    "8A78": ("F.15", "04/22/2022", "1.15"),
+    "X12DPi-N6": ("1.2", "02/18/2022", "1.2"),
+    "0H5J3T": ("1.6.0", "03/04/2022", "1.6"),
+}
+
+
+def qemu_opt(value):
+    """Escape a value for QEMU's comma-separated option parser."""
+    return str(value).replace(",", ",,")
+
+
 def rnd_hex(n):
     return "".join(random.choice("0123456789ABCDEF") for _ in range(n))
 
@@ -180,29 +213,144 @@ def platform_vendor(platform):
     return "intel" if PLATFORMS[platform]["cpu_vendor"].startswith("Intel") else "amd"
 
 
-def gen(platform, kind, host_sensors, pmu=True, tsc_pin=False, host_vendor="unknown"):
+def detect_host_cpu_model(path="/proc/cpuinfo"):
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("model name") and ":" in line:
+                    return line.split(":", 1)[1].strip()
+    except OSError:
+        pass
+    return None
+
+
+def detect_host_processor_id(path="/proc/cpuinfo"):
+    fields = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                if ":" in line:
+                    key, value = line.split(":", 1)
+                    if key.strip() in ("cpu family", "model", "stepping") and key.strip() not in fields:
+                        fields[key.strip()] = int(value.strip())
+    except (OSError, ValueError):
+        pass
+    if not all(key in fields for key in ("cpu family", "model", "stepping")):
+        raise ValueError("cannot derive host processor ID from /proc/cpuinfo")
+    family, model, stepping = fields["cpu family"], fields["model"], fields["stepping"]
+    extended_family = family - 15 if family == 15 else 0
+    return ((extended_family & 0xff) << 20) | ((model >> 4) << 16) | \
+           ((family & 0x0f) << 8) | ((model & 0x0f) << 4) | (stepping & 0x0f)
+
+
+def detect_host_socket():
+    """Read the physical socket from SMBIOS; never infer it from a CPU SKU."""
+    try:
+        result = subprocess.run(["dmidecode", "-t", "processor"], check=True,
+                                capture_output=True, text=True)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    for line in result.stdout.splitlines():
+        if line.strip().startswith("Socket Designation:"):
+            value = line.split(":", 1)[1].strip().upper().replace(" ", "")
+            aliases = {"LGA1151": "LGA1151", "LGA1200": "LGA1200",
+                       "LGA1700": "LGA1700", "LGA4189": "LGA4189",
+                       "SOCKETAM4": "AM4", "SOCKETAM5": "AM5"}
+            return aliases.get(value, value)
+    return None
+
+
+def detect_host_topology():
+    result = subprocess.run(["lscpu", "-J"], check=True, capture_output=True, text=True,
+                            env={**os.environ, "LC_ALL": "C"})
+    fields = {item["field"]: item["data"] for item in json.loads(result.stdout)["lscpu"]}
+    names = {"sockets": "Socket(s):", "cores": "Core(s) per socket:",
+             "threads": "Thread(s) per core:"}
+    topology = {}
+    for key, name in names.items():
+        try:
+            topology[key] = int(fields[name])
+        except (KeyError, ValueError) as exc:
+            raise ValueError(f"cannot read host topology field {name}") from exc
+        if topology[key] < 1:
+            raise ValueError(f"invalid host topology field {name}")
+    return topology
+
+
+def cache_size_kb(value):
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)([KMG]?)", value)
+    if not match:
+        raise ValueError(f"unsupported cache size {value!r}")
+    scale = {"": 1 / 1024, "K": 1, "M": 1024, "G": 1024 * 1024}[match.group(2)]
+    size = float(match.group(1)) * scale
+    if size != int(size) or size < 1:
+        raise ValueError(f"cache size is not an integer KiB value: {value!r}")
+    return int(size)
+
+
+def detect_host_caches():
+    result = subprocess.run(
+        ["lscpu", "-C=NAME,ONE-SIZE,WAYS,TYPE,LEVEL"], check=True,
+        capture_output=True, text=True, env={**os.environ, "LC_ALL": "C"})
+    caches = []
+    for line in result.stdout.splitlines()[1:]:
+        fields = line.split()
+        if len(fields) != 5:
+            continue
+        name, size, ways, kind, level = fields
+        caches.append({"name": name, "size_kb": cache_size_kb(size), "ways": int(ways),
+                       "type": kind, "level": int(level)})
+    for level in (1, 2, 3):
+        if not any(cache["level"] == level for cache in caches):
+            raise ValueError(f"host cache level {level} is missing from lscpu")
+    return caches
+
+
+def gen(platform, kind, host_sensors, pmu=True, tsc_pin=False, host_vendor="unknown",
+        cpu_source="host", host_cpu_model=None, cpu_model=None, chipset_map=None):
     p = PLATFORMS[platform]
     if host_vendor != "unknown" and host_vendor != platform_vendor(platform):
         raise ValueError(f"platform {platform} does not match {host_vendor} host CPU")
+    if cpu_source not in ("host", "model"):
+        raise ValueError("cpu_source must be 'host' or 'model'")
     mem_type, mem_form, mem_volt, kits = MEM_CLASS[p["mem_class"]]
     cpus = p["cpus_gaming"] if kind == "gaming" else p["cpus_neutral"]
-    cpu = random.choice(cpus)
-    board_vendor, board_model = random.choice(p["boards"])
+    if cpu_source == "host":
+        if not host_cpu_model or not host_cpu_model.strip():
+            raise ValueError("Strong-real requires the exact host CPU model")
+        cpu = host_cpu_model.strip()
+        if cpu_model is not None:
+            raise ValueError("an arbitrary CPU model is forbidden when cpu_source=host")
+    else:
+        cpu = cpu_model.strip() if cpu_model else random.choice(cpus)
+        if not cpu or any(ord(c) < 32 for c in cpu):
+            raise ValueError("model mode requires a printable, non-empty CPU SKU")
+    topology = detect_host_topology() if cpu_source == "host" else None
+    caches = detect_host_caches() if cpu_source == "host" else []
+    records = (chipset_map or {}).get("records", [])
+    mapped_boards = [(record, (record["board"]["manufacturer"], record["board"]["product"]))
+                     for record in records
+                     if record["board"]["socket"].upper() == p["socket"].upper()
+                     and (record["board"]["manufacturer"], record["board"]["product"]) in p["boards"]]
+    chipset_record, (board_vendor, board_model) = (random.choice(mapped_boards)
+        if mapped_boards else (None, random.choice(p["boards"])))
     mem_vendor, mem_part, speed = random.choice(kits)
     serial17 = rnd_hex(8)
     asset17 = rnd_digits(10)
     board_serial = rnd_alnum(10)
+    system_serial = rnd_alnum(12)
+    chassis_serial = rnd_alnum(12)
+    board_asset = rnd_alnum(8)
+    chassis_asset = rnd_alnum(8)
     sys_uuid = str(uuid.UUID(int=random.getrandbits(128), version=4))
-    # disk serial prefix styled after a real drive family (SSD/NVMe)
-    ide_prefix = random.choice(["S4EVNF0N", "S6Z1NG0T", "50026B7", "Z9ANESAM"])[:6] + rnd_alnum(2)
     oui = random.choice(p["oui"])
     mac = oui + ":" + ":".join(rnd_hex(2) for _ in range(3))
-    bios_ver = f"{random.randint(1,3)}.{random.randint(10,80)}"
-    bios_date = f"{random.randint(1,12):02d}/{random.randint(1,28):02d}/{random.randint(2022,2024)}"
+    bios_ver, bios_date, bios_release = BOARD_BIOS[board_model]
     if p.get("bios_vendor_oem"):
-        bios_vendor = random.choice(p["bios_vendors"])
+        bios_vendor = {"LENOVO": "LENOVO", "Dell Inc.": "Dell Inc.", "HP": "HP"}[board_vendor]
     else:
         bios_vendor = p["bios_vendor"]
+    processor_id = detect_host_processor_id()
 
     env = {
         "MEM_TYPE_HEX": f"0x{mem_type:02x}",
@@ -213,11 +361,14 @@ def gen(platform, kind, host_sensors, pmu=True, tsc_pin=False, host_vendor="unkn
         "MEM_VMIN": str(mem_volt),
         "MEM_VMAX": str(mem_volt),
         "MEM_VCFG": str(mem_volt),
+        "MEM_ERROR_CORRECTION_HEX": "0x06" if p["mem_class"] == "ddr4_rdimm" else "0x03",
+        "MEM_TYPE_DETAIL_HEX": "0x0080" if p["mem_class"] == "ddr4_rdimm" else "0x0002",
         "CPU_SOCKET": p["socket"],
-        "IDE_SERIAL_PREFIX": ide_prefix,
-        "SUBSYS_VENDOR_HEX": f"0x{SUBSYS_VENDOR.get(board_vendor, 0x1043):04x}",
-        "SUBSYS_DEVICE_HEX": f"0x{random.randint(0x8000, 0x8fff):04x}",
     }
+    if chipset_record:
+        subvendor, subdevice = CHIPSET.subsystem_identity(chipset_record)
+        env["SUBSYS_VENDOR_HEX"] = f"0x{subvendor:04x}"
+        env["SUBSYS_DEVICE_HEX"] = f"0x{subdevice:04x}"
 
     # -cpu options: a real CPU exposes an architectural PMU (CPUID.0AH) and a fixed TSC
     # frequency. pmu=on turns on KVM's in-guest PMU so CPUID.0AH is non-zero (its absence is
@@ -232,21 +383,38 @@ def gen(platform, kind, host_sensors, pmu=True, tsc_pin=False, host_vendor="unkn
         cpu_opts.append(f"tsc-frequency={tsc_hz}")
     if host_sensors and host_vendor == "intel":
         cpu_opts.append("host-sensors=on")
+    family = "Notebook" if p["chassis"] == 10 else ("Server" if p["chassis"] == 23 else "Desktop")
     args = (
         "-cpu " + ",".join(cpu_opts) + " "
-        f'-smbios type=0,vendor="{bios_vendor}",version={bios_ver},date={bios_date},release={bios_ver} '
-        f'-smbios type=1,manufacturer="{board_vendor}",product="{board_model}",version="1.0",serial={board_serial},uuid={sys_uuid} '
-        f'-smbios type=2,manufacturer="{board_vendor}",product="{board_model}",version="1.0",serial={board_serial} '
-        f'-smbios type=3,manufacturer="{board_vendor}",type={p["chassis"]},version="1.0" '
-        f'-smbios type=4,manufacturer="{p["cpu_vendor"]}",version="{cpu}" '
-        f'-smbios type=17,manufacturer="{mem_vendor}",part="{mem_part}",speed={speed},serial={serial17},asset={asset17} '
-        "-smbios type=9 -smbios type=8"
+        f'-smbios type=0,vendor="{qemu_opt(bios_vendor)}",version="{qemu_opt(bios_ver)}",date={qemu_opt(bios_date)},release={qemu_opt(bios_release)},uefi=on '
+        f'-smbios type=1,manufacturer="{qemu_opt(board_vendor)}",product="{qemu_opt(board_model)}",version="1.0",serial={qemu_opt(system_serial)},uuid={sys_uuid},sku="{qemu_opt(board_model)}",family="{qemu_opt(family)}" '
+        f'-smbios type=2,manufacturer="{qemu_opt(board_vendor)}",product="{qemu_opt(board_model)}",version="1.0",serial={qemu_opt(board_serial)},asset={qemu_opt(board_asset)},location="System Board" '
+        f'-smbios type=3,manufacturer="{qemu_opt(board_vendor)}",type={p["chassis"]},version="1.0",serial={qemu_opt(chassis_serial)},asset={qemu_opt(chassis_asset)},sku="{qemu_opt(board_model)}" '
+        f'-smbios type=4,sock_pfx="{qemu_opt(p["socket"])}",manufacturer="{qemu_opt(p["cpu_vendor"])}",version="{qemu_opt(cpu)}",processor-id=0x{processor_id:08x} '
+        f'-smbios type=17,loc_pfx="DIMM",bank="BANK",manufacturer="{qemu_opt(mem_vendor)}",part="{qemu_opt(mem_part)}",speed={speed},serial={qemu_opt(serial17)},asset={qemu_opt(asset17)} '
+        '-smbios type=41,designation="Onboard LAN",kind=ethernet,instance=1,pcidev=net0'
     )
     summary = {
-        "platform": platform, "kind": kind, "cpu": cpu, "host_vendor": host_vendor,
+        "platform": platform, "kind": kind, "cpu_source": cpu_source,
+        "cpu": cpu, "host_vendor": host_vendor,
+        "topology": topology, "caches": caches,
         "board": f"{board_vendor} {board_model}", "socket": p["socket"],
         "memory": f"{mem_vendor} {mem_part} @ {speed} MT/s (type 0x{mem_type:02x}, {FF_NAME[mem_form]})",
         "bios": f"{bios_vendor} {bios_ver} ({bios_date})", "mac": mac, "uuid": sys_uuid,
+        "bios_record": {"vendor": bios_vendor, "version": bios_ver,
+                        "date": bios_date, "release": bios_release},
+        "chassis_type": p["chassis"], "memory_module_mb": 16384,
+        "processor_id": f"0x{processor_id:08x}",
+        "psu": {"location": "Chassis rear", "name": "PSU 1", "manufacturer": "FSP Group",
+                "serial": "PSU" + rnd_alnum(9), "asset": "PSU-01",
+                "model": "FSP1000-50AGT" if p["chassis"] == 23 else "FSP650-50EGN",
+                "revision": "1.0", "capacity_w": 1000 if p["chassis"] == 23 else 650},
+        "battery": {"location": "System battery", "manufacturer": "SMP",
+                    "date": "03/15/2023", "serial": "BAT" + rnd_alnum(9),
+                    "name": board_model + " Battery", "capacity_mwh": 60000,
+                    "voltage_mv": 15400},
+        "chipset": ("real-dump " + CHIPSET.board_key(chipset_record["board"])
+                    if chipset_record else "unmapped; identity-only QEMU defaults"),
         "pmu": "on" if pmu else "off",
         "tsc": (f"pinned {tsc_hz/1e9:.2f} GHz" if (tsc_pin and tsc_hz)
                 else ("host (not pinned)" if not tsc_pin
@@ -259,7 +427,15 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--platform", choices=list(PLATFORMS))
     ap.add_argument("--kind", choices=["gaming", "neutral"], default="neutral")
+    ap.add_argument("--cpu-source", choices=["host", "model"], default="host",
+                    help="host: exact host CPU identity; model: Strong-skin skeleton")
+    ap.add_argument("--cpu-model", help="SKU for --cpu-source model; forbidden in host mode")
+    ap.add_argument("--host-cpu-model", help=argparse.SUPPRESS)
+    ap.add_argument("--chipset-map", default=str(Path(__file__).resolve().parents[1] /
+                                                   "profiles" / "chipset-map.json"))
+    ap.add_argument("--socket", help="physical host socket; default: dmidecode")
     ap.add_argument("--seed", type=int)
+    ap.add_argument("--vmid", help="stable VM identifier recorded in profile.conf")
     ap.add_argument("--out", default=".")
     ap.add_argument("--host-sensors", type=int, choices=[0, 1], default=1)
     ap.add_argument("--host-vendor", choices=["auto", "intel", "amd", "unknown"], default="auto",
@@ -281,21 +457,36 @@ def main():
     if a.seed is not None:
         random.seed(a.seed)
     host_vendor = detect_host_vendor() if a.host_vendor == "auto" else a.host_vendor
+    host_cpu_model = (a.host_cpu_model or detect_host_cpu_model()
+                      if a.cpu_source == "host" else None)
     if host_vendor == "unknown" and not a.platform:
         ap.error("cannot detect the host CPU vendor; specify --platform and --host-vendor explicitly")
+    if a.cpu_source == "host" and not host_cpu_model:
+        ap.error("cannot read the host CPU model from /proc/cpuinfo")
+    socket = a.socket or (detect_host_socket() if a.cpu_source == "host" else None)
     compatible = [name for name in PLATFORMS
-                  if host_vendor == "unknown" or platform_vendor(name) == host_vendor]
+                  if (host_vendor == "unknown" or platform_vendor(name) == host_vendor)
+                  and (not socket or PLATFORMS[name]["socket"].upper() == socket.upper())]
+    if not compatible:
+        ap.error(f"no platform matches host vendor {host_vendor} and socket {socket or 'unknown'}")
+    if not a.platform and a.cpu_source == "host" and not socket:
+        ap.error("cannot detect the host socket; pass --socket explicitly (do not guess it)")
     platform = a.platform or random.choice(compatible)
     if platform not in compatible:
-        ap.error(f"platform {platform} does not match the real {host_vendor} host CPU")
+        ap.error(f"platform {platform} does not match host vendor {host_vendor} and socket {socket or 'unknown'}")
+    chipset_path = Path(a.chipset_map)
+    chipset_map = json.loads(chipset_path.read_text()) if chipset_path.exists() else None
     env, args, summary, (mem_type, mem_form), tsc_pinned = gen(
         platform, a.kind, a.host_sensors, pmu=bool(a.pmu), tsc_pin=bool(a.tsc_pin),
-        host_vendor=host_vendor)
+        host_vendor=host_vendor, cpu_source=a.cpu_source,
+        host_cpu_model=host_cpu_model, cpu_model=a.cpu_model, chipset_map=chipset_map)
 
     import os
     os.makedirs(a.out, exist_ok=True)
     envp = os.path.join(a.out, "profile.env")
     argp = os.path.join(a.out, "profile.args")
+    confp = os.path.join(a.out, "profile.conf")
+    jsonp = os.path.join(a.out, "profile.json")
     with open(envp, "w") as f:
         f.write("# Build-time profile overrides. Merge into config.env and rebuild QEMU if the\n")
         f.write("# memory type/form factor below differ from your build, or to apply the subsystem\n")
@@ -304,11 +495,24 @@ def main():
             f.write(f'{k}="{v}"\n' if " " in v else f"{k}={v}\n")
     with open(argp, "w") as f:
         f.write("args: " + args + "\n")
+    with open(confp, "w") as f:
+        for key, value in summary.items():
+            if isinstance(value, (str, int)):
+                f.write(f"{key.upper()}={shlex.quote(str(value))}\n")
+        f.write(f"TOPOLOGY_JSON={shlex.quote(json.dumps(summary['topology'], sort_keys=True))}\n")
+        f.write(f"CACHES_JSON={shlex.quote(json.dumps(summary['caches'], sort_keys=True))}\n")
+        f.write(f"CPU_ARGS={shlex.quote(args)}\n")
+    if a.vmid:
+        summary["vmid"] = a.vmid
+    with open(jsonp, "w") as f:
+        json.dump({"summary": summary, "env": env, "args": args}, f,
+                  indent=2, sort_keys=True)
+        f.write("\n")
 
-    print(f"Platform: {summary['platform']} ({summary['kind']})")
+    print(f"Platform: {summary['platform']} ({summary['kind']}, {a.cpu_source})")
     for key in ("host_vendor", "cpu", "board", "socket", "memory", "bios", "mac", "pmu", "tsc"):
         print(f"  {key:8s}: {summary[key]}")
-    print(f"\nwrote {envp} and {argp}")
+    print(f"\nwrote {envp}, {argp}, {confp} and {jsonp}")
     if tsc_pinned:
         print(
             "\n!! tsc-frequency is PINNED. Two requirements before you use this profile:\n"

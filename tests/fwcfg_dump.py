@@ -6,6 +6,7 @@ usage: fwcfg_dump.py OUTDIR -- qemu-system-x86_64 [args...]
 Writes every fw_cfg file under OUTDIR (slashes replaced by '_') and prints the list.
 QEMU must be started with "-qtest stdio" among its args.
 """
+import json
 import os
 import struct
 import subprocess
@@ -67,4 +68,29 @@ for name, sel, size in files:
     data = read(size)
     open(os.path.join(outdir, name.replace("/", "_")), "wb").write(data)
     print(f"{name} {size}")
+
+
+def pci_read(bus, device, function, offset):
+    address = 0x80000000 | (bus << 16) | (device << 11) | (function << 8) | offset
+    cmd(f"outl 0xcf8 {address:#x}")
+    return int(cmd("inl 0xcfc")[1], 16)
+
+
+# Capture the actual bus-0 identities as well as fw_cfg. This lets check.py verify
+# the type-41 BDF and reject QEMU's 1b36 vendor instead of checking only strings.
+pci = []
+for device in range(32):
+    for function in range(8):
+        identity = pci_read(0, device, function, 0)
+        vendor, device_id = identity & 0xFFFF, identity >> 16
+        if vendor == 0xFFFF:
+            continue
+        class_code = (pci_read(0, device, function, 8) >> 16) & 0xFFFF
+        pci.append({"bus": 0, "device": device, "function": function,
+                    "vendor_id": vendor, "device_id": device_id,
+                    "class_code": class_code})
+with open(os.path.join(outdir, "pci.json"), "w", encoding="utf-8") as stream:
+    json.dump(pci, stream, indent=2, sort_keys=True)
+    stream.write("\n")
+print(f"PCI bus 0: {len(pci)} functions")
 p.kill()

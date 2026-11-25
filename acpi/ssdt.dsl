@@ -1,4 +1,4 @@
-DefinitionBlock ("", "SSDT", 2, "INTEL", "HWMON", 0x00000001)
+DefinitionBlock ("", "SSDT", 2, "ALASKA", "A M I   ", 0x00000001)
 {
     Scope (\_SB)
     {
@@ -23,41 +23,6 @@ DefinitionBlock ("", "SSDT", 2, "INTEL", "HWMON", 0x00000001)
                 VOLT,   32,
                 STAT,   32
             }
-        }
-
-        Device (PWRB)
-        {
-            Name (_HID, EisaId ("PNP0C0C"))
-            Name (_UID, "PWRB")
-            Name (_STA, 0x0B)
-        }
-
-        Device (SLPB)
-        {
-            Name (_HID, EisaId ("PNP0C0E"))
-            Name (_UID, "SLPB")
-            Name (_STA, 0x0B)
-        }
-
-        Device (PIC0)
-        {
-            Name (_HID, EisaId ("PNP0000"))
-            Name (_UID, "PIC0")
-            Name (_STA, 0x0F)
-        }
-
-        Device (WMI0)
-        {
-            Name (_HID, EisaId ("PNP0C14"))
-            Name (_UID, "WMI0")
-            Name (_STA, 0x0F)
-        }
-
-        Device (WINB)
-        {
-            Name (_HID, EisaId ("PNP0D80"))
-            Name (_UID, "WINB")
-            Name (_STA, 0x0F)
         }
     }
 
@@ -98,7 +63,7 @@ DefinitionBlock ("", "SSDT", 2, "INTEL", "HWMON", 0x00000001)
             Method (_TMP, 0, NotSerialized)
             {
                 Local0 = \_SB.HSEN.TPCK
-                If (Local0 == 0xFFFFFFFF) { Return (0x0FF6) }
+                If (Local0 == 0xFFFFFFFF) { Return (0x0BB8) }
                 Return (Local0)
             }
             Method (_PSV, 0, NotSerialized) { Return (0x1058) }
@@ -116,7 +81,7 @@ DefinitionBlock ("", "SSDT", 2, "INTEL", "HWMON", 0x00000001)
             Method (_TMP, 0, NotSerialized)
             {
                 Local0 = \_SB.HSEN.TPCR
-                If (Local0 == 0xFFFFFFFF) { Return (0x0FF6) }
+                If (Local0 == 0xFFFFFFFF) { Return (0x0BB8) }
                 Return (Local0)
             }
             Method (_PSV, 0, NotSerialized) { Return (0x1058) }

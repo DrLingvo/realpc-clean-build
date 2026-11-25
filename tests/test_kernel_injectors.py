@@ -28,6 +28,14 @@ static int emulator_fix_hypercall(struct x86_emulate_ctxt *ctxt)
 	}
 	return X86EMUL_CONTINUE;
 }
+
+static int kvm_get_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
+{
+	switch (msr_info->index) {
+	default:
+		return 1;
+	}
+}
 '''
 
 CPUID_FIXTURE = r'''
@@ -83,7 +91,14 @@ class InjectorTest(unittest.TestCase):
         self.assertIn("realpc_clear_hypervisor_bit", cpuid)
         self.assertIn("best = kvm_find_cpuid_entry(vcpu, 1);", cpuid)
         self.assertIn("best->ecx &= ~BIT(31);", cpuid)
+        self.assertIn("entry->function == KVM_CPUID_SIGNATURE", cpuid)
+        self.assertIn("entry->function == KVM_CPUID_FEATURES", cpuid)
+        self.assertIn("memset(entry, 0, sizeof(*entry));", cpuid)
         self.assertLess(cpuid.index("realpc_clear_hypervisor_bit"), cpuid.index("memset("))
+        self.assertIn("realpc_kvm_msr_gp", patched)
+        self.assertIn("msr_info->index >= 0x4b564d00", patched)
+        self.assertIn("msr_info->index <= 0x4b564d08", patched)
+        self.assertLess(patched.index("realpc_kvm_msr_gp"), patched.index("switch (msr_info->index)"))
 
     def test_antidetect_is_idempotent(self):
         first, patched, cpuid = self.run_patch(ANTIDETECT, X86_FIXTURE)

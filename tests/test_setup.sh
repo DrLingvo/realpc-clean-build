@@ -14,15 +14,17 @@ mkdir -p "$WORKDIR"
 printf qemu > "$WORKDIR/pve-qemu-kvm_1_amd64.deb"
 printf ovmf > "$WORKDIR/pve-edk2-firmware-ovmf_1_all.deb"
 printf '0123456789abcdef0123456789abcdef01234567\n' > "$WORKDIR/SOURCE-COMMIT"
-for name in ssdt.aml ssdt-ec.aml hpet.aml wsmt.aml; do printf '%s' "$name" > "$WORKDIR/$name"; done
+for name in ssdt.aml wsmt.aml; do printf '%s' "$name" > "$WORKDIR/$name"; done
+printf tools > "$WORKDIR/realpc-vm-tools.tar.gz"
 (cd "$WORKDIR" && sha256sum ./* > SHA256SUMS)
 required=(pve-qemu-kvm_1_amd64.deb pve-edk2-firmware-ovmf_1_all.deb SOURCE-COMMIT
-          ssdt.aml ssdt-ec.aml hpet.aml wsmt.aml)
+          realpc-vm-tools.tar.gz ssdt.aml wsmt.aml)
 verify_assets "$WORKDIR" "${required[@]}" >/dev/null
 grep -q 'dist/wsmt.aml' "$ROOT/.github/workflows/release.yml"
-# QEMU 11.1.3 accepts these SMBIOS option names; do not reintroduce newer-API spellings.
-grep -q 'internal_reference=J' "$ROOT/deploy/realpc-setup.sh"
-grep -q 'slot_designation=SLOT' "$ROOT/deploy/realpc-setup.sh"
+grep -q 'source/tests/guest_audit.ps1' "$ROOT/.github/workflows/release.yml"
+# Production VM arguments come only from the generated host profile.
+grep -q 'gen-profile.py' "$ROOT/deploy/realpc-setup.sh"
+! grep -q 'CFG_ARGS_TEMPLATE\|CFG_VM_SET' "$ROOT/deploy/realpc-setup.sh"
 ! grep -q 'internal_reference_designator\|external_reference_designator\|busaddr=' "$ROOT/deploy/realpc-setup.sh"
 grep -q 'T8_BASE + instance' "$ROOT/qemu/smbios-profile.sh"
 grep -q 'l1_cache_handle = cpu_to_le16(0x0700)' "$ROOT/qemu/smbios-profile.sh"
@@ -520,11 +522,14 @@ cat > "$kdir/x86.c" <<'C'
 static int complete_hypercall_exit(struct kvm_vcpu *vcpu) { return 0; }
 int kvm_emulate_hypercall(struct kvm_vcpu *vcpu) { return 0; }
 static int emulator_fix_hypercall(struct x86_emulate_ctxt *ctxt) { return 0; }
+static int kvm_get_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info) { return 0; }
 C
 cat > "$kdir/cpuid.c" <<'C'
 void kvm_vcpu_after_set_cpuid(struct kvm_vcpu *vcpu)
 {
 	struct kvm_cpuid_entry2 *best;
+	struct kvm_cpuid_entry2 *entry;
+	int i;
 	memset(vcpu->arch.cpu_caps, 0, sizeof(vcpu->arch.cpu_caps));
 	kvm_update_cpuid_runtime(vcpu);
 }
@@ -549,9 +554,17 @@ mkdir -p "$contract/pve" "$contract/args.d/100" "$contract/assets/.bak"
   need_root(){ :; }; cpu_model(){ printf 'Test CPU'; }; cpu_vendor(){ printf intel; }
   YES=1; VMID=100
   for name in "${CFG_AML[@]}"; do printf '%s' "$name" > "$WORKDIR/$name"; done
-  (cd "$WORKDIR" && sha256sum ./*.aml > SHA256SUMS)
+  tar -C "$ROOT/tools" -czf "$WORKDIR/$CFG_VM_TOOLS_ASSET" gen-profile.py disk_identity.py vm-config.py chipset_map.py smbios_tables.py consistency_lint.py
+  (cd "$WORKDIR" && sha256sum ./*.aml "$CFG_VM_TOOLS_ASSET" > SHA256SUMS)
+  for id in 100 101; do
+    python3 "$ROOT/tools/gen-profile.py" --platform intel_desktop_lga1200 \
+      --host-vendor intel --host-cpu-model 'Test CPU' --socket LGA1200 \
+      --vmid "$id" --seed "$id" --out "$WORKDIR/profiles/$id" >/dev/null
+  done
   cat > "$PVE_QEMU_DIR/100.conf" <<'CFG'
 name: contract
+memory: 16384
+net0: e1000=02:F0:5D:01:02:03,bridge=vmbr0
 vga: none
 hostpci0: 0000:00:02.0,pcie=1
 args: -set device.hostpci0.bus=pcie.0 -global old.setting=1
@@ -563,27 +576,18 @@ CFG
   printf '%s\n' '-object early=1' > "$HOST_TOOLS_ARGS_D/100/10-early.args"
   printf '%s\n' '-set device.hostpci0.addr=0x02 -object vgpu=1' > "$HOST_TOOLS_ARGS_D/100/50-pve-intel-gpu.args"
   qm(){
-    [[ "$1" == set ]] || return 1
-    local id=$2; shift 2
-    python3 - "$PVE_QEMU_DIR/$id.conf" "$@" <<'PY'
-import pathlib, sys
-path = pathlib.Path(sys.argv[1])
-pairs = dict(zip(sys.argv[2::2], sys.argv[3::2]))
-lines = path.read_text().splitlines(keepends=True)
-end = next((i for i, line in enumerate(lines) if line.startswith("[")), len(lines))
-main, snapshots = lines[:end], lines[end:]
-for option, value in pairs.items():
-    key = option.removeprefix("--")
-    main = [line for line in main if not line.startswith(key + ":")]
-    main.append(f"{key}: {value}\n")
-path.write_text("".join(main + snapshots))
-PY
+    [[ "$1" == status ]] || return 1
+    printf 'status: stopped\n'
   }
   configvm >/dev/null
   conf="$PVE_QEMU_DIR/100.conf"
   grep -q '^vga: none$' "$conf"
   grep -q '^hostpci0: 0000:00:02.0,pcie=1$' "$conf"
   grep -q '^CONTRACT_VERSION=1$' "$STATE"
+  grep -q -- '-smbios file=.*smbios39-psu.bin' "$conf"
+  ! grep -q -- 'smbios22-battery.bin' "$conf"
+  [[ -s "$WORKDIR/profiles/100/smbios39-psu.bin" ]]
+  [[ $(grep -o -- 'smbios7-[0-9].bin' "$conf" | wc -l) -ge 3 ]]
   [[ $(grep -c -- '-object early=1' "$conf") == 1 ]]
   [[ $(grep -c -- '-object vgpu=1' "$conf") == 1 ]]
   python3 - "$conf" <<'PY'
@@ -615,6 +619,8 @@ PY
   VMID=101
   cat > "$PVE_QEMU_DIR/101.conf" <<'CFG'
 name: ordinary
+memory: 16384
+net0: e1000=02:F0:5D:01:02:04,bridge=vmbr0
 vga: vmware
 CFG
   configvm >/dev/null

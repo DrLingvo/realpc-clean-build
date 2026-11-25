@@ -74,15 +74,15 @@ jobs:
         id: recipe
         if: ${{ steps.run.outputs.installer_only == 'true' }}
         run: |
-          # Compare every binary recipe input except host-built kernel tools. The full
-          # source-hash output supplies stable per-file hashes; remove kernel lines before
-          # calculating the userspace-only hash. Both trees use the same implementation.
+          # Compare binary recipe inputs, excluding host-built kernel tools and runtime
+          # VM-profile tools. make-logo.py remains included because it changes firmware.
+          # Both trees use the same implementation.
           userspace_hash() (
             set -euo pipefail
             cd "$1"
             bash tools/source-hash.sh | awk '/^  / {
               sub(/^  /, "")
-              if ($2 !~ /^kernel\//) print
+              if ($2 !~ /^kernel\// && ($2 !~ /^tools\// || $2 == "tools/make-logo.py")) print
             }' | sha256sum | awk '{print $1}'
           )
           new_hash=$(userspace_hash source)
@@ -108,16 +108,18 @@ jobs:
           ovmf=(dist/pve-edk2-firmware-ovmf_*_all.deb)
           [ "${#qemu[@]}" -eq 1 ] || { echo "Expected exactly one QEMU amd64 package" >&2; exit 1; }
           [ "${#ovmf[@]}" -eq 1 ] || { echo "Expected exactly one OVMF package" >&2; exit 1; }
-          for file in ssdt.aml ssdt-ec.aml hpet.aml wsmt.aml qemu-applied.diff edk2-applied.diff seabios-applied.diff; do
+          for file in ssdt.aml wsmt.aml qemu-applied.diff edk2-applied.diff seabios-applied.diff; do
             [ -s "dist/$file" ] || { echo "Missing or empty required artifact: $file" >&2; exit 1; }
           done
           mkdir -p rel
           cp "${qemu[@]}" "${ovmf[@]}" rel/
-          cp dist/ssdt.aml dist/ssdt-ec.aml dist/hpet.aml dist/wsmt.aml dist/*-applied.diff rel/
+          cp dist/ssdt.aml dist/wsmt.aml dist/*-applied.diff rel/
           # Normal releases use the same commit for everything. Installer-only releases
           # take host-side tools from main and reuse binaries only after the hash guard.
           tar -C source/kernel --exclude='./out' --exclude='./__pycache__' -czf rel/realpc-kernel-tools.tar.gz .
+          tar -C source/tools -czf rel/realpc-vm-tools.tar.gz gen-profile.py disk_identity.py vm-config.py chipset_map.py smbios_tables.py consistency_lint.py
           cp source/deploy/realpc-setup.sh source/deploy/install-userspace.sh rel/
+          cp source/tests/guest_audit.ps1 rel/
           printf '%s\n' "${{ steps.run.outputs.release_sha }}" > rel/SOURCE-COMMIT
           printf '%s\n' "${{ steps.run.outputs.artifact_sha }}" > rel/ARTIFACT-SOURCE-COMMIT
           if [ "${{ steps.run.outputs.installer_only }}" = true ]; then
