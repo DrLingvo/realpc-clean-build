@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Render a coherent Strong-real PVE main section without touching snapshots."""
+__version__ = "1.1.0"  # bump on every change to this script
 import argparse
 import importlib.util
 import json
@@ -104,11 +105,16 @@ def render(text, profile, sizes, acpi_dir, fragment_args=""):
     if memory_mb < module_mb or memory_mb % module_mb:
         raise ValueError(f"memory must be a positive multiple of the {module_mb} MiB DIMM kit")
 
+    # net0 is exempt: its MAC is regenerated from the profile a few lines below, so a
+    # stock Proxmox/QEMU OUI there is expected and gets overwritten. Other interfaces are
+    # left untouched, so a bad OUI on them is a real leak and must fail closed.
     for key, value in current.items():
-        if re.fullmatch(r"net\d+", key):
+        if re.fullmatch(r"net\d+", key) and key != "net0":
             mac = re.search(r"\b([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})\b", value)
             if mac and mac.group(1).upper()[:8] in BAD_OUIS:
                 raise ValueError(f"{key} uses a Proxmox/QEMU OUI: {mac.group(1)}")
+    if summary["mac"].upper()[:8] in BAD_OUIS:
+        raise ValueError(f"profile MAC uses a Proxmox/QEMU OUI: {summary['mac']}")
     net = current["net0"].split(",")
     mac_index = next((i for i, item in enumerate(net) if item.startswith("mac=")), None)
     if mac_index is not None:

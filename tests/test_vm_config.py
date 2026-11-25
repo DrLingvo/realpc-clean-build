@@ -72,11 +72,23 @@ args: snapshot-must-not-change
         self.assertIn("uuid=" + generated["summary"]["uuid"], result)
         self.assertIn("pcidev=net0", result)
 
-    def test_qemu_and_proxmox_ouis_are_rejected(self):
+    def test_net0_proxmox_oui_is_replaced_not_rejected(self):
+        # net0's MAC is regenerated from the profile, so a stock Proxmox/QEMU OUI there
+        # must be accepted and overwritten with the coherent MAC, not rejected.
+        generated = profile()
+        config = self.config.replace("02:F0:5D:01:02:03", "BC:24:11:7A:59:25")
+        result = VM.render(config, generated, self.sizes, "/root/realpc", "")
+        self.assertIn("net0: e1000e,bridge=vmbr0,mac=" + generated["summary"]["mac"],
+                      result)
+        self.assertNotIn("BC:24:11:7A:59:25", result)
+
+    def test_bad_oui_on_an_untouched_nic_is_rejected(self):
+        # interfaces other than net0 are left as-is, so a stock OUI there is a real leak.
         for oui in ("52:54:00:01:02:03", "BC:24:11:01:02:03"):
+            config = self.config.replace(
+                "[snapshot]", f"net1: e1000e={oui},bridge=vmbr1\n[snapshot]")
             with self.subTest(oui=oui), self.assertRaises(ValueError):
-                VM.render(self.config.replace("02:F0:5D:01:02:03", oui),
-                          profile(), self.sizes, "/acpi")
+                VM.render(config, profile(), self.sizes, "/acpi")
 
     def test_vgpu_vga_and_hostpci_are_preserved(self):
         config = self.config + "hostpci0: 00:02.0\nvga: none\n"
