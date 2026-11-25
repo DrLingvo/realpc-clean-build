@@ -35,22 +35,48 @@ def values(main):
     return result
 
 
+def is_hard_disk(key, value):
+    """Select real disks, not empty/ISO CD-ROMs with no disk identity size."""
+    if not re.fullmatch(r"(?:sata|scsi|virtio)\d+", key):
+        return False
+    return not any(part.strip().lower() == "media=cdrom"
+                   for part in value.split(",")[1:])
+
+
 def volume_size(value):
     volume = value.split(",", 1)[0]
     path = subprocess.run(["pvesm", "path", volume], check=True, text=True,
                           capture_output=True).stdout.strip()
+    if not path:
+        raise ValueError(f"pvesm path returned an empty path for {volume}")
     if Path(path).is_block_device():
-        return int(subprocess.run(["blockdev", "--getsize64", path], check=True,
-                                  text=True, capture_output=True).stdout.strip())
+        raw = subprocess.run(["blockdev", "--getsize64", path], check=True,
+                             text=True, capture_output=True).stdout.strip()
+        try:
+            size = int(raw)
+        except ValueError as exc:
+            raise ValueError(f"blockdev returned an invalid byte size for {volume}: {raw!r}") from exc
+        if size <= 0:
+            raise ValueError(f"blockdev returned a non-positive byte size for {volume}: {size}")
+        return size
     info = subprocess.run(["qemu-img", "info", "--output=json", path], check=True,
                           text=True, capture_output=True)
-    return int(json.loads(info.stdout)["virtual-size"])
+    if not info.stdout.strip():
+        raise ValueError(f"qemu-img info returned empty output for {volume} ({path})")
+    try:
+        document = json.loads(info.stdout)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"qemu-img info returned invalid JSON for {volume} ({path}): {exc.msg}") from exc
+    size = document.get("virtual-size") if isinstance(document, dict) else None
+    if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+        raise ValueError(f"qemu-img info has no positive integer virtual-size for {volume} ({path})")
+    return size
 
 
 def collect_sizes(main):
     result = {}
     for key, value in values(main).items():
-        if re.fullmatch(r"(?:sata|scsi|virtio)\d+", key):
+        if is_hard_disk(key, value):
             result[key] = volume_size(value)
     return result
 
@@ -98,7 +124,7 @@ def render(text, profile, sizes, acpi_dir, fragment_args=""):
     put(main, "net0", ",".join(net))
 
     disk_args = []
-    disks = sorted((key for key in current if re.fullmatch(r"(?:sata|scsi|virtio)\d+", key)),
+    disks = sorted((key for key, value in current.items() if is_hard_disk(key, value)),
                    key=lambda key: (int(re.search(r"\d+", key).group()), key))
     for old_key in disks:
         index = re.search(r"\d+", old_key).group()
