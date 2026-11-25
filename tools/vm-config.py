@@ -44,32 +44,26 @@ def is_hard_disk(key, value):
 
 
 def volume_size(value):
+    """Read exact virtual bytes from PVE metadata, even for inactive LVM-thin."""
     volume = value.split(",", 1)[0]
-    path = subprocess.run(["pvesm", "path", volume], check=True, text=True,
-                          capture_output=True).stdout.strip()
-    if not path:
-        raise ValueError(f"pvesm path returned an empty path for {volume}")
-    if Path(path).is_block_device():
-        raw = subprocess.run(["blockdev", "--getsize64", path], check=True,
-                             text=True, capture_output=True).stdout.strip()
-        try:
-            size = int(raw)
-        except ValueError as exc:
-            raise ValueError(f"blockdev returned an invalid byte size for {volume}: {raw!r}") from exc
-        if size <= 0:
-            raise ValueError(f"blockdev returned a non-positive byte size for {volume}: {size}")
-        return size
-    info = subprocess.run(["qemu-img", "info", "--output=json", path], check=True,
-                          text=True, capture_output=True)
-    if not info.stdout.strip():
-        raise ValueError(f"qemu-img info returned empty output for {volume} ({path})")
-    try:
-        document = json.loads(info.stdout)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"qemu-img info returned invalid JSON for {volume} ({path}): {exc.msg}") from exc
-    size = document.get("virtual-size") if isinstance(document, dict) else None
-    if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
-        raise ValueError(f"qemu-img info has no positive integer virtual-size for {volume} ({path})")
+    storage, separator, _ = volume.partition(":")
+    if not separator or not storage:
+        raise ValueError(f"invalid PVE volume ID: {volume}")
+    listing = subprocess.run(["pvesm", "list", storage], check=True, text=True,
+                             capture_output=True).stdout
+    matches = []
+    for line in listing.splitlines():
+        fields = line.split()
+        if fields and fields[0] == volume:
+            matches.append(fields)
+    if len(matches) != 1 or len(matches[0]) < 4:
+        raise ValueError(f"pvesm list did not return exactly one sized entry for {volume}")
+    raw = matches[0][3]
+    if not re.fullmatch(r"[0-9]+", raw):
+        raise ValueError(f"pvesm list has no exact integer byte size for {volume}: {raw!r}")
+    size = int(raw)
+    if size <= 0:
+        raise ValueError(f"pvesm list returned a non-positive byte size for {volume}: {size}")
     return size
 
 

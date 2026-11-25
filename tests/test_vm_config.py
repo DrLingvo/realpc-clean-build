@@ -118,30 +118,31 @@ args: snapshot-must-not-change
                 self.assertIn(f"sata1: {cdrom}\n", result)
                 self.assertNotIn("device.sata1.", result)
 
-    def test_empty_qemu_img_json_fails_closed_with_volume_context(self):
-        volume = "local:101/vm-101-disk-0.qcow2"
-        path = "/var/lib/vz/images/101/vm-101-disk-0.qcow2"
+    def test_inactive_lvm_thin_uses_exact_pvesm_metadata_size(self):
+        volume = "local-lvm:vm-101-disk-1"
+        listing = """Volid                         Format Type   Size         VMID
+local-lvm:vm-101-disk-1       raw    images 500107862016 101
+local-lvm:vm-101-disk-10      raw    images 999999999999 101
+"""
+        with mock.patch.object(VM.subprocess, "run", return_value=(
+                VM.subprocess.CompletedProcess(["pvesm"], 0, stdout=listing))) as query:
+            self.assertEqual(VM.volume_size(volume), 500107862016)
+        self.assertEqual(query.call_args.args[0], ["pvesm", "list", "local-lvm"])
 
-        def fake_run(command, **kwargs):
-            if command[:2] == ["pvesm", "path"]:
-                return VM.subprocess.CompletedProcess(command, 0, stdout=path + "\n", stderr="")
-            if command[:2] == ["qemu-img", "info"]:
-                return VM.subprocess.CompletedProcess(command, 0, stdout="", stderr="")
-            raise AssertionError(command)
-
-        with mock.patch.object(VM.subprocess, "run", side_effect=fake_run):
-            with self.assertRaisesRegex(ValueError, "qemu-img info returned empty output.*" + volume):
-                VM.volume_size(volume)
-
-    def test_invalid_qemu_img_virtual_size_fails_closed(self):
-        for stdout in ("not-json", "{}", '{"virtual-size": 0}', '{"virtual-size": true}'):
-            with self.subTest(stdout=stdout):
-                with mock.patch.object(VM.Path, "is_block_device", return_value=False), \
-                     mock.patch.object(VM.subprocess, "run", side_effect=(
-                         VM.subprocess.CompletedProcess(["pvesm"], 0, stdout="/tmp/disk.qcow2\n"),
-                         VM.subprocess.CompletedProcess(["qemu-img"], 0, stdout=stdout))):
-                    with self.assertRaisesRegex(ValueError, "qemu-img info"):
-                        VM.volume_size("local:101/vm-101-disk-0.qcow2")
+    def test_pvesm_size_requires_one_exact_positive_integer(self):
+        volume = "local-lvm:vm-101-disk-1"
+        cases = (
+            ("missing", "Volid Format Type Size VMID\n", "exactly one"),
+            ("duplicate", f"{volume} raw images 1024 101\n{volume} raw images 1024 101\n", "exactly one"),
+            ("approximate", f"{volume} raw images ~1024 101\n", "exact integer"),
+            ("zero", f"{volume} raw images 0 101\n", "non-positive"),
+            ("not-a-size", f"{volume} raw images unknown 101\n", "exact integer"),
+        )
+        for name, stdout, message in cases:
+            with self.subTest(name=name), mock.patch.object(VM.subprocess, "run", return_value=(
+                    VM.subprocess.CompletedProcess(["pvesm"], 0, stdout=stdout))):
+                with self.assertRaisesRegex(ValueError, message):
+                    VM.volume_size(volume)
 
 
 if __name__ == "__main__":
