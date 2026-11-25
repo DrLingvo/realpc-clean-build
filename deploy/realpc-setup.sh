@@ -50,7 +50,7 @@ SELF_DIR="$(dirname "$SELF")"; SELF_NAME="$(basename "$SELF")"; SELF_NAME="${SEL
 
 REPO="$CFG_REPO"; MODE="$CFG_MODE"; RELEASE="$CFG_RELEASE"; WORKDIR="$CFG_WORKDIR"
 DOWNLOAD="$CFG_DOWNLOAD"; LOG="$CFG_LOG"; LOGFILE="$CFG_LOGFILE"; VMID="$CFG_VMID"
-YES="$CFG_YES"; CPU_MODEL=""; KSRC="$CFG_KSRC"; KVM_BUILD="$CFG_KVM_BUILD"
+YES="$CFG_YES"; CPU_MODEL=""; HOST_SOCKET=""; KSRC="$CFG_KSRC"; KVM_BUILD="$CFG_KVM_BUILD"
 
 usage(){
   cat <<'EOF'
@@ -64,6 +64,7 @@ Options:
   --log LEVEL       none|normal|debug
   --logfile PATH    Log file path
   --vmid N          VM ID for configvm
+  --socket NAME     Physical host socket override for configvm (for OEM DMI strings)
   --cpu-model NAME  Override the CPU model written by configvm
   --kvm-prebuilt    Use the release kvm.ko for the exact running kernel (default)
   --kvm-build       Build kvm.ko on this host instead of using a prebuilt module
@@ -94,6 +95,7 @@ while [[ $# -gt 0 ]]; do
     --log) LOG="${2:?missing value for --log}"; shift 2 ;;
     --logfile) LOGFILE="${2:?missing value for --logfile}"; shift 2 ;;
     --vmid) VMID="${2:?missing value for --vmid}"; shift 2 ;;
+    --socket) HOST_SOCKET="${2:?missing value for --socket}"; shift 2 ;;
     --cpu-model) CPU_MODEL="${2:?missing value for --cpu-model}"; shift 2 ;;
     --kvm-prebuilt) KVM_BUILD=0; shift ;;
     --kvm-build) KVM_BUILD=1; shift ;;
@@ -801,8 +803,10 @@ do_check(){
   echo "Release tag:  $(st_get RELEASE_TAG || true)"
   echo "Built kernel: $(st_get KERNEL_RELEASE || true)"
   if dpkg-query -W pve-qemu-kvm >/dev/null 2>&1; then
-    qemu-system-x86_64 -cpu help 2>/dev/null | grep -qiw host-sensors \
-      && echo "host-sensors: available in QEMU" || echo "host-sensors: unavailable (stock QEMU)"
+    qemu-system-x86_64 -machine none -accel kvm -display none -cpu host,help 2>&1 \
+      | grep -qiw host-sensors \
+      && echo "host-sensors: available in QEMU" \
+      || echo "host-sensors: not confirmed (CPU property query failed or stock QEMU)"
   fi
   mokutil --sb-state >/dev/null 2>&1 && echo "Secure Boot:  $(mokutil --sb-state 2>/dev/null)" || echo "Secure Boot:  unknown"
   if mod_is_ours; then ok "The on-disk kvm.ko has the realpc marker"
@@ -886,6 +890,14 @@ update_install(){ need_root
   ok "Update complete: mode=$mode release=$RESOLVED_TAG kernel=${current_kernel}. VM configs were not changed."
 }
 
+generate_host_profile(){
+  local tools_dir=$1 profile_dir=$2 id=$3
+  local socket_opts=()
+  [[ -n "$HOST_SOCKET" ]] && socket_opts=(--socket "$HOST_SOCKET")
+  python3 "$tools_dir/gen-profile.py" --cpu-source host --host-vendor "$(cpu_vendor)" \
+    --vmid "$id" --seed "$id" --out "$profile_dir" "${socket_opts[@]}" >/dev/null
+}
+
 # CONFIGVM: a separate explicit operation; update never calls this function.
 configvm(){ need_root
   [[ -n "$VMID" ]] || die "Specify --vmid N"
@@ -909,9 +921,8 @@ configvm(){ need_root
   tar --no-same-owner -xzf "$WORKDIR/$CFG_VM_TOOLS_ASSET" -C "$tools_dir" \
     || die "Could not unpack verified VM tools"
   if [[ ! -f "$profile_dir/profile.json" ]]; then
-    python3 "$tools_dir/gen-profile.py" --cpu-source host --host-vendor "$(cpu_vendor)" \
-      --vmid "$VMID" --seed "$VMID" --out "$profile_dir" >/dev/null \
-      || die "Could not generate a host-truth profile; verify the host socket"
+    generate_host_profile "$tools_dir" "$profile_dir" "$VMID" \
+      || die "Could not generate a host-truth profile; verify the host socket or pass --socket explicitly"
   fi
   python3 - "$profile_dir/profile.json" "$(cpu_model)" <<'PY' \
     || die "Saved profile CPU differs from the current host; remove the VM profile and regenerate it"

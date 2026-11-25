@@ -243,21 +243,47 @@ def detect_host_processor_id(path="/proc/cpuinfo"):
            ((family & 0x0f) << 8) | ((model & 0x0f) << 4) | (stepping & 0x0f)
 
 
+SOCKET_ALIASES = {
+    "LGA1151": "LGA1151", "SOCKETLGA1151": "LGA1151",
+    "LGA1200": "LGA1200", "SOCKETLGA1200": "LGA1200",
+    "LGA1700": "LGA1700", "SOCKETLGA1700": "LGA1700",
+    "LGA4189": "LGA4189", "SOCKETLGA4189": "LGA4189",
+    "BGA1744": "BGA1744", "SOCKETBGA1744": "BGA1744",
+    "AM4": "AM4", "SOCKETAM4": "AM4",
+    "AM5": "AM5", "SOCKETAM5": "AM5",
+}
+
+
+def socket_alias(value):
+    normalized = value.strip().upper().replace(" ", "")
+    return SOCKET_ALIASES.get(normalized)
+
+
 def detect_host_socket():
-    """Read the physical socket from SMBIOS; never infer it from a CPU SKU."""
+    """Read the physical socket from SMBIOS; never infer it from a CPU SKU.
+
+    Board vendors often put an internal designator such as U3E1 in Socket
+    Designation. That string is not a socket type and is reused across LGA
+    generations. SMBIOS Type 4 Upgrade carries values such as Socket LGA1200,
+    so use it only when the designation itself is not a known socket.
+    """
     try:
         result = subprocess.run(["dmidecode", "-t", "processor"], check=True,
                                 capture_output=True, text=True)
     except (OSError, subprocess.CalledProcessError):
         return None
+    designation = None
+    upgrade = None
     for line in result.stdout.splitlines():
-        if line.strip().startswith("Socket Designation:"):
-            value = line.split(":", 1)[1].strip().upper().replace(" ", "")
-            aliases = {"LGA1151": "LGA1151", "LGA1200": "LGA1200",
-                       "LGA1700": "LGA1700", "LGA4189": "LGA4189",
-                       "SOCKETAM4": "AM4", "SOCKETAM5": "AM5"}
-            return aliases.get(value, value)
-    return None
+        stripped = line.strip()
+        if designation is None and stripped.startswith("Socket Designation:"):
+            raw = stripped.split(":", 1)[1]
+            designation = socket_alias(raw) or raw.strip().upper().replace(" ", "")
+        elif upgrade is None and stripped.startswith("Upgrade:"):
+            upgrade = socket_alias(stripped.split(":", 1)[1])
+    if designation in set(SOCKET_ALIASES.values()):
+        return designation
+    return upgrade or designation
 
 
 def detect_host_topology():
