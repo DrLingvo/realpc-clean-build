@@ -33,6 +33,26 @@ grep -q 'build_append_int_noprefix(tbl, 1 .* Desktop .*, 1);' "$ROOT/qemu/anti-d
 ! grep -q 'fadt.preferred_pm_profile' "$ROOT/qemu/anti-detection.sh"
 # The ISA device must not be linked into targets without the ISA implementation.
 grep -q "system_ss.add(when: 'CONFIG_ISA_BUS', if_true: files('host-sensors.c'))" "$ROOT/build.sh"
+# CPU model listing is not a CPU property query. Check the actual custom property.
+grep -q -- '-cpu host,help' "$ROOT/deploy/realpc-setup.sh"
+! grep -q -- '-cpu help' "$ROOT/deploy/realpc-setup.sh"
+
+# An OEM DMI designator can be overridden explicitly without editing a VM config.
+(
+  HOST_SOCKET=LGA1200
+  cpu_vendor(){ printf intel; }
+  python3(){ printf '%s\n' "$*" > "$TMP/profile-with-socket.args"; }
+  generate_host_profile /tools /profile 101
+  grep -q -- '--socket LGA1200' "$TMP/profile-with-socket.args"
+  grep -q -- '--vmid 101 --seed 101' "$TMP/profile-with-socket.args"
+) || { echo "configvm socket override was not forwarded" >&2; exit 1; }
+(
+  HOST_SOCKET=""
+  cpu_vendor(){ printf intel; }
+  python3(){ printf '%s\n' "$*" > "$TMP/profile-auto-socket.args"; }
+  generate_host_profile /tools /profile 101
+  ! grep -q -- '--socket' "$TMP/profile-auto-socket.args"
+) || { echo "automatic socket detection gained an unexpected override" >&2; exit 1; }
 
 printf corrupt >> "$WORKDIR/ssdt.aml"
 if verify_assets "$WORKDIR" "${required[@]}" >/dev/null 2>&1; then

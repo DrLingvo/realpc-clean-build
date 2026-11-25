@@ -4,6 +4,7 @@ import random
 import re
 import unittest
 import uuid
+from unittest import mock
 from pathlib import Path
 
 PATH = Path(__file__).resolve().parents[1] / "tools" / "gen-profile.py"
@@ -15,6 +16,32 @@ SPEC.loader.exec_module(MODULE)
 class ProfileTest(unittest.TestCase):
     def setUp(self):
         random.seed(12345)
+
+    def socket_fixture(self, text):
+        return mock.patch.object(
+            MODULE.subprocess, "run",
+            return_value=MODULE.subprocess.CompletedProcess(
+                ["dmidecode", "-t", "processor"], 0, stdout=text, stderr=""))
+
+    def test_oem_socket_designation_uses_smbios_upgrade(self):
+        dmi = """
+Processor Information
+        Socket Designation: U3E1
+        Version: Intel(R) Core(TM) i7-10700T CPU @ 2.00GHz
+        Upgrade: Socket LGA1200
+"""
+        with self.socket_fixture(dmi):
+            self.assertEqual(MODULE.detect_host_socket(), "LGA1200")
+
+    def test_known_socket_designation_is_preserved(self):
+        dmi = "Processor Information\n        Socket Designation: LGA1700\n        Upgrade: Other\n"
+        with self.socket_fixture(dmi):
+            self.assertEqual(MODULE.detect_host_socket(), "LGA1700")
+
+    def test_oem_designation_without_upgrade_is_not_guessed(self):
+        dmi = "Processor Information\n        Socket Designation: U3E1\n        Upgrade: Other\n"
+        with self.socket_fixture(dmi):
+            self.assertEqual(MODULE.detect_host_socket(), "U3E1")
 
     def test_vendor_mismatch_is_rejected(self):
         with self.assertRaises(ValueError):
