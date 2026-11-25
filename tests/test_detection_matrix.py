@@ -35,7 +35,8 @@ class DetectionMatrixTest(unittest.TestCase):
 
     def test_pending_machine_proofs_are_not_rewritten_as_passes(self):
         for marker in (
-            "The new qtest has not run on branch-built packages",
+            "45506262453",
+            "0 check(s) failed",
             "No such boot test has run on this branch",
             "no Windows detector run has occurred",
             "sandbox reported no architectural PMU",
