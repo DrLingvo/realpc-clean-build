@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Render a coherent Strong-real PVE main section without touching snapshots."""
-__version__ = "1.1.0"  # bump on every change to this script
+__version__ = "1.2.0"  # bump on every change to this script
 import argparse
 import importlib.util
 import json
@@ -74,6 +74,46 @@ def collect_sizes(main):
         if is_hard_disk(key, value):
             result[key] = volume_size(value)
     return result
+
+
+def disk_volid(value):
+    return value.split(",")[0].strip()
+
+
+def resize_disks_up(main, vmid=None, run=subprocess.run):
+    """Grow each file-based disk up to the nearest real SSD capacity so its reported size
+    matches a genuine SKU. Grow-only (safe); block storage (LVM-thin/ZFS) cannot hold an
+    exact SKU byte size, so it is rejected with guidance. Returns a list of (key, old, new)."""
+    resized = []
+    for key, value in values(main).items():
+        if not is_hard_disk(key, value):
+            continue
+        size = volume_size(value)
+        if any(sku["bytes"] == size for sku in DISK.SKUS):
+            continue  # already an exact real SKU size
+        target = DISK.nearest_sku_up(size)
+        if target is None:
+            raise ValueError(
+                f"{key}: size {size} exceeds the largest known SKU; add a larger SKU")
+        volid = disk_volid(value)
+        path = run(["pvesm", "path", volid], check=True, text=True,
+                   capture_output=True).stdout.strip()
+        if not path or not os.path.isfile(path):
+            raise ValueError(
+                f"{key}: {volid} is on block storage ({path or 'no path'}); exact real-disk "
+                f"sizing needs file-based storage (dir/nfs, raw/qcow2). Move the disk or "
+                f"create it at an exact SKU size.")
+        run(["qemu-img", "resize", path, str(target)], check=True, text=True,
+            capture_output=True)
+        actual = volume_size(value)
+        if actual != target:
+            raise ValueError(
+                f"{key}: resize did not reach the exact SKU size (got {actual}, "
+                f"wanted {target})")
+        resized.append((key, size, target))
+    if resized and vmid is not None:
+        run(["qm", "rescan", "--vmid", str(vmid)], check=False)
+    return resized
 
 
 def put(main, key, value):
@@ -177,14 +217,25 @@ def render(text, profile, sizes, acpi_dir, fragment_args=""):
 def main_cli():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
-    parser.add_argument("--profile", required=True)
+    parser.add_argument("--profile")
     parser.add_argument("--sizes", help="JSON disk byte sizes; default queries PVE storage")
-    parser.add_argument("--acpi-dir", required=True)
+    parser.add_argument("--acpi-dir")
     parser.add_argument("--fragment-args", default="")
-    parser.add_argument("--out", required=True)
+    parser.add_argument("--out")
+    parser.add_argument("--vmid", help="VM id; used by --resize-up to rescan PVE after resize")
+    parser.add_argument("--resize-up", action="store_true",
+                        help="grow file-based disks up to the nearest real SSD size, then exit")
     args = parser.parse_args()
     text = Path(args.config).read_text()
     main, _ = split_main(text)
+    if args.resize_up:
+        for key, old, new in resize_disks_up(main, vmid=args.vmid):
+            print(f"resized {key}: {old} -> {new} bytes")
+        return
+    missing = [name for name in ("profile", "acpi_dir", "out") if getattr(args, name) is None]
+    if missing:
+        parser.error("arguments required unless --resize-up: "
+                     + ", ".join("--" + name.replace("_", "-") for name in missing))
     sizes = json.loads(Path(args.sizes).read_text()) if args.sizes else collect_sizes(main)
     profile = json.loads(Path(args.profile).read_text())
     SMBIOS.write_profile_records(profile, Path(args.profile).parent)

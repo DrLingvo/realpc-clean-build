@@ -932,6 +932,10 @@ with open(sys.argv[1], encoding="utf-8") as f:
 assert profile["summary"]["cpu_source"] == "host"
 assert profile["summary"]["cpu"] == sys.argv[2]
 PY
+  info "Rounding file-based disks up to the nearest real SSD size (grow-only, thin-safe)..."
+  python3 "$tools_dir/vm-config.py" --config "$conf" --vmid "$VMID" --resize-up \
+    || die "Disk resize to a real SKU size failed; no configuration was written"
+  info "Disk growth is not undone by rollback (growing a thin disk is safe and reversible only by you)"
   local rendered; rendered=$(mktemp "$WORKDIR/.bak/${VMID}.rendered.XXXXXX")
   python3 "$tools_dir/vm-config.py" --config "$conf" --profile "$profile_dir/profile.json" \
     --acpi-dir "$WORKDIR" --fragment-args "$(args_fragments "$VMID")" --out "$rendered" \

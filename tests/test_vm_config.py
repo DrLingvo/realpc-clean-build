@@ -57,9 +57,11 @@ args: snapshot-must-not-change
         args = shlex.split(next(line[6:] for line in result.splitlines()
                                 if line.startswith("args: ")))
         disk_set = args[args.index("-set") + 1]
+        expected = VM.DISK.disk_identity("100", "sata0", 500107862016)
+        self.assertEqual(expected["bytes"], 500107862016)
         self.assertTrue(disk_set.startswith(
-            "device.sata0.model=Samsung SSD 860 EVO 500GB,serial="))
-        self.assertIn(",version=RVT04B6Q,wwn=0x", disk_set)
+            f"device.sata0.model={expected['model']},serial="))
+        self.assertIn(f",version={expected['firmware']},wwn=0x", disk_set)
         self.assertIn("[snapshot]\nargs: snapshot-must-not-change\n", result)
         self.assertIn('version="' + HOST_CPU + '"', result)
         topology = generated["summary"]["topology"]
@@ -155,6 +157,52 @@ local-lvm:vm-101-disk-10      raw    images 999999999999 101
                     VM.subprocess.CompletedProcess(["pvesm"], 0, stdout=stdout))):
                 with self.assertRaisesRegex(ValueError, message):
                     VM.volume_size(volume)
+
+
+class DiskResizeTest(unittest.TestCase):
+    def _run_factory(self, path="/tmp/vm-100-disk-0.raw"):
+        calls = []
+
+        def run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[:2] == ["pvesm", "path"]:
+                return VM.subprocess.CompletedProcess(cmd, 0, stdout=path + "\n")
+            return VM.subprocess.CompletedProcess(cmd, 0, stdout="")
+        return run, calls
+
+    def test_grows_file_disk_up_to_nearest_sku(self):
+        main, _ = VM.split_main("scsi0: files:100/vm-100-disk-0.raw,size=128G\n")
+        run, calls = self._run_factory()
+        with mock.patch.object(VM, "volume_size",
+                               side_effect=[137438953472, 240057409536]), \
+                mock.patch.object(VM.os.path, "isfile", return_value=True):
+            resized = VM.resize_disks_up(main, vmid="100", run=run)
+        self.assertEqual(resized, [("scsi0", 137438953472, 240057409536)])
+        self.assertIn(["qemu-img", "resize", "/tmp/vm-100-disk-0.raw", "240057409536"], calls)
+        self.assertIn(["qm", "rescan", "--vmid", "100"], calls)
+
+    def test_block_storage_is_rejected(self):
+        main, _ = VM.split_main("scsi0: local-lvm:vm-100-disk-0,size=128G\n")
+        run, _ = self._run_factory(path="/dev/pve/vm-100-disk-0")
+        with mock.patch.object(VM, "volume_size", return_value=137438953472), \
+                mock.patch.object(VM.os.path, "isfile", return_value=False):
+            with self.assertRaisesRegex(ValueError, "block storage"):
+                VM.resize_disks_up(main, run=run)
+
+    def test_size_over_largest_sku_fails_closed(self):
+        main, _ = VM.split_main("scsi0: files:100/vm-100-disk-0.raw\n")
+        run, _ = self._run_factory()
+        with mock.patch.object(VM, "volume_size", return_value=5 * 10 ** 12):
+            with self.assertRaisesRegex(ValueError, "exceeds the largest known SKU"):
+                VM.resize_disks_up(main, run=run)
+
+    def test_exact_sku_is_left_untouched(self):
+        main, _ = VM.split_main("scsi0: files:100/vm-100-disk-0.raw\n")
+        run, calls = self._run_factory()
+        with mock.patch.object(VM, "volume_size", return_value=500107862016):
+            resized = VM.resize_disks_up(main, run=run)
+        self.assertEqual(resized, [])
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":
