@@ -4,6 +4,7 @@ import json
 import shlex
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -103,6 +104,44 @@ args: snapshot-must-not-change
         with self.assertRaises(ValueError):
             VM.render(self.config.replace("memory: 16384", "memory: 8192"),
                       profile(), self.sizes, "/acpi")
+
+    def test_cdrom_is_preserved_without_a_disk_size_query(self):
+        for cdrom in ("none,media=cdrom", "local:iso/windows.iso,media=cdrom"):
+            with self.subTest(cdrom=cdrom):
+                config = self.config.replace("agent: 1", f"sata1: {cdrom}\nagent: 1")
+                main, _ = VM.split_main(config)
+                with mock.patch.object(VM, "volume_size", return_value=500107862016) as query:
+                    sizes = VM.collect_sizes(main)
+                self.assertEqual(sizes, self.sizes)
+                query.assert_called_once_with("local:100/vm-100-disk-0.qcow2")
+                result = VM.render(config, profile(), sizes, "/acpi")
+                self.assertIn(f"sata1: {cdrom}\n", result)
+                self.assertNotIn("device.sata1.", result)
+
+    def test_empty_qemu_img_json_fails_closed_with_volume_context(self):
+        volume = "local:101/vm-101-disk-0.qcow2"
+        path = "/var/lib/vz/images/101/vm-101-disk-0.qcow2"
+
+        def fake_run(command, **kwargs):
+            if command[:2] == ["pvesm", "path"]:
+                return VM.subprocess.CompletedProcess(command, 0, stdout=path + "\n", stderr="")
+            if command[:2] == ["qemu-img", "info"]:
+                return VM.subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+            raise AssertionError(command)
+
+        with mock.patch.object(VM.subprocess, "run", side_effect=fake_run):
+            with self.assertRaisesRegex(ValueError, "qemu-img info returned empty output.*" + volume):
+                VM.volume_size(volume)
+
+    def test_invalid_qemu_img_virtual_size_fails_closed(self):
+        for stdout in ("not-json", "{}", '{"virtual-size": 0}', '{"virtual-size": true}'):
+            with self.subTest(stdout=stdout):
+                with mock.patch.object(VM.Path, "is_block_device", return_value=False), \
+                     mock.patch.object(VM.subprocess, "run", side_effect=(
+                         VM.subprocess.CompletedProcess(["pvesm"], 0, stdout="/tmp/disk.qcow2\n"),
+                         VM.subprocess.CompletedProcess(["qemu-img"], 0, stdout=stdout))):
+                    with self.assertRaisesRegex(ValueError, "qemu-img info"):
+                        VM.volume_size("local:101/vm-101-disk-0.qcow2")
 
 
 if __name__ == "__main__":
