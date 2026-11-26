@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 import importlib.util
+import json
+import os
 import random
 import re
+import sys
+import tempfile
 import unittest
 import uuid
 from unittest import mock
@@ -122,6 +126,74 @@ Processor Information
         self.assertEqual(summary["cpu_source"], "model")
         self.assertIn('version="Example SKU"', args)
         self.assertIn("-cpu host", args)
+
+
+class SocketInferenceTest(unittest.TestCase):
+    def test_u3e1_is_not_a_known_socket(self):
+        self.assertNotIn("U3E1", MODULE.KNOWN_SOCKETS)
+        self.assertIn("LGA1200", MODULE.KNOWN_SOCKETS)
+
+    def test_socket_from_cpu_maps_known_microarchitectures(self):
+        self.assertEqual(MODULE.socket_from_cpu("intel", (6, 165)), "LGA1200")  # Comet Lake
+        self.assertEqual(MODULE.socket_from_cpu("intel", (6, 151)), "LGA1700")  # Alder Lake
+        self.assertEqual(MODULE.socket_from_cpu("amd", (25, 33)), "AM4")        # Zen3 Vermeer
+        self.assertEqual(MODULE.socket_from_cpu("amd", (25, 97)), "AM5")        # Zen4 Raphael
+
+    def test_socket_from_cpu_does_not_guess_unknown(self):
+        self.assertIsNone(MODULE.socket_from_cpu("intel", (6, 999)))
+        self.assertIsNone(MODULE.socket_from_cpu("intel", None))
+        self.assertIsNone(MODULE.socket_from_cpu("unknown", (6, 165)))
+
+    def test_detect_host_family_model_parses_cpuinfo(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+            f.write("processor\t: 0\ncpu family\t: 6\nmodel\t\t: 165\nstepping\t: 5\n")
+            path = f.name
+        try:
+            self.assertEqual(MODULE.detect_host_family_model(path), (6, 165))
+        finally:
+            os.unlink(path)
+
+    def test_oem_host_resolves_platform_from_cpu(self):
+        """A host whose SMBIOS reports U3E1 (not a socket) still generates a profile."""
+        caches = [{"name": "L1d", "size_kb": 32, "ways": 8, "type": "Data", "level": 1},
+                  {"name": "L2", "size_kb": 256, "ways": 4, "type": "Unified", "level": 2},
+                  {"name": "L3", "size_kb": 16384, "ways": 16, "type": "Unified", "level": 3}]
+        with tempfile.TemporaryDirectory() as out:
+            argv = ["gen-profile.py", "--cpu-source", "host", "--host-vendor", "intel",
+                    "--vmid", "100", "--seed", "100", "--out", out]
+            with mock.patch.object(sys, "argv", argv), \
+                 mock.patch.object(MODULE, "detect_host_socket", return_value="U3E1"), \
+                 mock.patch.object(MODULE, "detect_host_cpu_model",
+                                   return_value="Intel(R) Core(TM) i7-10700T CPU @ 2.00GHz"), \
+                 mock.patch.object(MODULE, "detect_host_family_model", return_value=(6, 165)), \
+                 mock.patch.object(MODULE, "detect_host_topology",
+                                   return_value={"sockets": 1, "cores": 8, "threads": 2}), \
+                 mock.patch.object(MODULE, "detect_host_caches", return_value=caches), \
+                 mock.patch.object(MODULE, "detect_host_processor_id", return_value=0x000A0655):
+                MODULE.main()
+            data = json.loads((Path(out) / "profile.json").read_text())
+            self.assertEqual(data["summary"]["socket"], "LGA1200")
+            self.assertEqual(data["summary"]["platform"], "intel_desktop_lga1200")
+
+    def test_explicit_socket_is_never_overridden_by_cpu(self):
+        """--socket wins even if the CPU map would infer a different socket."""
+        caches = [{"name": "L1d", "size_kb": 32, "ways": 8, "type": "Data", "level": 1},
+                  {"name": "L2", "size_kb": 256, "ways": 4, "type": "Unified", "level": 2},
+                  {"name": "L3", "size_kb": 16384, "ways": 16, "type": "Unified", "level": 3}]
+        with tempfile.TemporaryDirectory() as out:
+            argv = ["gen-profile.py", "--cpu-source", "host", "--host-vendor", "intel",
+                    "--socket", "LGA1700", "--vmid", "100", "--seed", "100", "--out", out]
+            with mock.patch.object(sys, "argv", argv), \
+                 mock.patch.object(MODULE, "detect_host_cpu_model",
+                                   return_value="Intel(R) Core(TM) i7-12700K"), \
+                 mock.patch.object(MODULE, "detect_host_family_model", return_value=(6, 165)), \
+                 mock.patch.object(MODULE, "detect_host_topology",
+                                   return_value={"sockets": 1, "cores": 8, "threads": 2}), \
+                 mock.patch.object(MODULE, "detect_host_caches", return_value=caches), \
+                 mock.patch.object(MODULE, "detect_host_processor_id", return_value=0x000A0655):
+                MODULE.main()
+            data = json.loads((Path(out) / "profile.json").read_text())
+            self.assertEqual(data["summary"]["socket"], "LGA1700")
 
 
 if __name__ == "__main__":

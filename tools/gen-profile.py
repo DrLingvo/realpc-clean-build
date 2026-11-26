@@ -34,6 +34,8 @@ import uuid
 import importlib.util
 from pathlib import Path
 
+__version__ = "1.1.0"  # bump on every change to this script
+
 CHIPSET_SPEC = importlib.util.spec_from_file_location(
     "chipset_map", str(Path(__file__).with_name("chipset_map.py")))
 CHIPSET = importlib.util.module_from_spec(CHIPSET_SPEC)
@@ -243,6 +245,31 @@ def detect_host_processor_id(path="/proc/cpuinfo"):
            ((family & 0x0f) << 8) | ((model & 0x0f) << 4) | (stepping & 0x0f)
 
 
+def detect_host_family_model(path="/proc/cpuinfo"):
+    """Return (display_family, display_model) ints from /proc/cpuinfo, or None.
+
+    Linux already folds the CPUID extended family/model bits into these two fields, so they
+    are the effective family and model that identify a microarchitecture.
+    """
+    fields = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                if ":" not in line:
+                    continue
+                key, value = line.split(":", 1)
+                key = key.strip()
+                if key in ("cpu family", "model") and key not in fields:
+                    fields[key] = int(value.strip())
+                if len(fields) == 2:
+                    break
+    except (OSError, ValueError):
+        return None
+    if "cpu family" not in fields or "model" not in fields:
+        return None
+    return fields["cpu family"], fields["model"]
+
+
 SOCKET_ALIASES = {
     "LGA1151": "LGA1151", "SOCKETLGA1151": "LGA1151",
     "LGA1200": "LGA1200", "SOCKETLGA1200": "LGA1200",
@@ -252,6 +279,8 @@ SOCKET_ALIASES = {
     "AM4": "AM4", "SOCKETAM4": "AM4",
     "AM5": "AM5", "SOCKETAM5": "AM5",
 }
+
+KNOWN_SOCKETS = frozenset(SOCKET_ALIASES.values())
 
 
 def socket_alias(value):
@@ -284,6 +313,50 @@ def detect_host_socket():
     if designation in set(SOCKET_ALIASES.values()):
         return designation
     return upgrade or designation
+
+
+# Physical socket by CPU microarchitecture (CPUID display family, model). Used ONLY as a
+# fallback when SMBIOS carries no real socket type: many OEM/consumer boards report an
+# internal reference designator such as U3E1 in Socket Designation and "Other" in Upgrade.
+# Each microarchitecture here ships in exactly one socket, so this is a fact, not a guess. A
+# CPU that is not listed returns None and the caller asks for an explicit --socket instead.
+CPU_SOCKET_MAP = {
+    # Intel, family 6 — desktop
+    ("intel", 6, 165): "LGA1200",   # Comet Lake-S  (10th gen Core desktop)
+    ("intel", 6, 167): "LGA1200",   # Rocket Lake-S (11th gen Core desktop)
+    ("intel", 6, 151): "LGA1700",   # Alder Lake-S  (12th gen Core desktop)
+    ("intel", 6, 183): "LGA1700",   # Raptor Lake-S (13th gen Core desktop)
+    ("intel", 6, 191): "LGA1700",   # Raptor Lake-S refresh (14th gen Core desktop)
+    # Intel, family 6 — mobile / server
+    ("intel", 6, 154): "BGA1744",   # Alder Lake-P  (12th gen Core mobile)
+    ("intel", 6, 186): "BGA1744",   # Raptor Lake-P (13th gen Core mobile)
+    ("intel", 6, 106): "LGA4189",   # Ice Lake-SP   (3rd gen Xeon Scalable)
+    # AMD, family 23 (Zen / Zen+ / Zen2) — AM4
+    ("amd", 23, 1):   "AM4",        # Summit Ridge  (Zen,  Ryzen 1000)
+    ("amd", 23, 8):   "AM4",        # Pinnacle Ridge (Zen+, Ryzen 2000)
+    ("amd", 23, 24):  "AM4",        # Picasso       (Zen+ APU, Ryzen 3000G)
+    ("amd", 23, 96):  "AM4",        # Renoir        (Zen2 APU, Ryzen 4000G)
+    ("amd", 23, 113): "AM4",        # Matisse       (Zen2, Ryzen 3000)
+    # AMD, family 25 (Zen3 / Zen4) — socket depends on the model
+    ("amd", 25, 33):  "AM4",        # Vermeer       (Zen3, Ryzen 5000)
+    ("amd", 25, 80):  "AM4",        # Cezanne       (Zen3 APU, Ryzen 5000G)
+    ("amd", 25, 97):  "AM5",        # Raphael       (Zen4, Ryzen 7000)
+    # AMD, family 26 (Zen5) — AM5
+    ("amd", 26, 68):  "AM5",        # Granite Ridge (Zen5, Ryzen 9000)
+}
+
+
+def socket_from_cpu(vendor, family_model):
+    """Infer the physical socket from the host CPU microarchitecture.
+
+    family_model is the (display_family, display_model) tuple from detect_host_family_model.
+    Returns a socket only for a CPU identified unambiguously, otherwise None so the caller
+    does not guess.
+    """
+    if not family_model:
+        return None
+    family, model = family_model
+    return CPU_SOCKET_MAP.get((vendor, family, model))
 
 
 def detect_host_topology():
@@ -490,6 +563,16 @@ def main():
     if a.cpu_source == "host" and not host_cpu_model:
         ap.error("cannot read the host CPU model from /proc/cpuinfo")
     socket = a.socket or (detect_host_socket() if a.cpu_source == "host" else None)
+    # Many OEM/consumer boards report an internal designator (e.g. U3E1) in SMBIOS instead of
+    # a socket type. When the user did not pass --socket and the detected value is not a real
+    # socket, fall back to the CPU microarchitecture, which maps to exactly one socket.
+    if a.cpu_source == "host" and not a.socket and (not socket or socket.upper() not in KNOWN_SOCKETS):
+        inferred = socket_from_cpu(host_vendor, detect_host_family_model())
+        if inferred:
+            if socket and socket.upper() not in KNOWN_SOCKETS:
+                print(f"gen-profile: SMBIOS socket designation {socket!r} is not a socket type; "
+                      f"using {inferred} inferred from the host CPU", file=sys.stderr)
+            socket = inferred
     compatible = [name for name in PLATFORMS
                   if (host_vendor == "unknown" or platform_vendor(name) == host_vendor)
                   and (not socket or PLATFORMS[name]["socket"].upper() == socket.upper())]
